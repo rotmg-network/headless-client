@@ -35,8 +35,28 @@ import {
   processObjectStatus,
   parsePlayerClass,
   hexdump,
+  ChatToken,
+  PortalType,
+  TextPacket,
 } from 'realmlib';
 import { BUILD_VERSION, GAME_ID, GAME_PORT, HELLO_TOKEN } from './constants';
+import { StatData } from 'realmlib';
+import { config } from './config';
+
+/** A realm portal in the nexus, parsed from its NAME stat. */
+export interface RealmPortal {
+  objectId: number;
+  /** The realm name, e.g. "Horizon". */
+  name: string;
+  /** Players currently in the realm. */
+  players: number;
+  /** Maximum players the realm holds. */
+  maxPlayers: number;
+  /** Server timestamp at which the realm opened. */
+  openedAt: number;
+  x: number;
+  y: number;
+}
 
 export interface ClientOptions {
   alias: string;
@@ -58,12 +78,14 @@ export class Client {
   private socket!: net.Socket;
   private io!: PacketIO;
 
+  // Current server / map state
   private host: string;
   private port = GAME_PORT;
   private gameId = GAME_ID.NEXUS;
   private key: number[] = [];
   private keyTime = -1;
 
+  // Current player state
   private objectId = -1;
   private pos = { x: 0, y: 0 };
   private posKnown = false;
@@ -74,9 +96,10 @@ export class Client {
   private player: PlayerData | undefined;
   private inQueue = false;
 
-  // Navigation / vault state.
+  // Navigation / vault state
   private wantVault = false;
   private readonly objects = new Map<number, { type: number; x: number; y: number; name?: string }>();
+  private readonly portals = new Map<number, RealmPortal>();
   private vaultPortalId: number | undefined;
   private target: { x: number; y: number } | undefined;
   private enteringVault = false;
@@ -85,12 +108,18 @@ export class Client {
   private lastUsePortalTick = -100;
   private usePortalAttempts = 0;
 
+  // Movement speed multipliers
   private static readonly SPEED_MIN = 0.004;
   private static readonly SPEED_MAX = 0.0096;
 
   constructor(private readonly opts: ClientOptions) {
     this.host = opts.host;
-    this.wantVault = opts.autoEnterVault ?? false;
+    this.wantVault = opts.autoEnterVault ?? config.autoEnterVault;
+  }
+
+  /** The realm portals currently tracked in the nexus. */
+  realmPortals(): RealmPortal[] {
+    return [...this.portals.values()];
   }
 
   /**
@@ -125,6 +154,80 @@ export class Client {
     return obj.status.stats.find((s) => s.statType === StatType.NAME_STAT)?.stringStatValue || undefined;
   }
 
+  /**
+   * Parses a realm portal NAME stat such as "NexusPortal.Horizon (37/85)" into
+   * the realm name and player counts.
+   */
+  private parseRealmPortal(raw: string): { name: string; players: number; maxPlayers: number } | undefined {
+    const match = /^(.*?)\s*\((\d+)\/(\d+)\)\s*$/.exec(raw);
+    if (!match) {
+      return undefined;
+    }
+    const label = match[1];
+    const name = label.includes('.') ? label.slice(label.lastIndexOf('.') + 1) : label;
+    return { name, players: Number(match[2]), maxPlayers: Number(match[3]) };
+  }
+
+  /** Records or refreshes a realm portal from its id, stats and position. */
+  private trackRealmPortal(objectId: number, stats: StatData[], x: number, y: number): void {
+    let rawName: string | undefined;
+    let openedAt: number | undefined;
+    for (const stat of stats) {
+      if (stat.statType === StatType.NAME_STAT) {
+        rawName = stat.stringStatValue;
+      } else if (stat.statType === StatType.OPENED_AT_TIMESTAMP) {
+        openedAt = stat.statValue;
+      }
+    }
+    if (rawName === undefined) {
+      return;
+    }
+    const parsed = this.parseRealmPortal(rawName);
+    if (!parsed) {
+      return;
+    }
+    const previous = this.portals.get(objectId);
+    this.portals.set(objectId, {
+      objectId,
+      x,
+      y,
+      name: parsed.name,
+      players: parsed.players,
+      maxPlayers: parsed.maxPlayers,
+      openedAt: openedAt ?? previous?.openedAt ?? 0,
+    });
+    if (!previous) {
+      console.log(
+        `${this.tag} realm portal: ${parsed.name} (${parsed.players}/${parsed.maxPlayers}) opened ${openedAt ?? '?'}`,
+      );
+    }
+  }
+
+  /** Resets per-connection state for a fresh nexus connection. */
+  private resetForNexus(): void {
+    this.gameId = GAME_ID.NEXUS;
+    this.key = [];
+    this.keyTime = -1;
+    this.posKnown = false;
+    this.objectId = -1;
+    this.inVault = false;
+    this.enteringVault = false;
+    this.vaultPortalId = undefined;
+    this.target = undefined;
+    this.usePortalAttempts = 0;
+    this.lastUsePortalTick = -100;
+    this.objects.clear();
+    this.portals.clear();
+  }
+
+  /** Reconnects to the nexus after `ms`, e.g. once a rate-limit has cooled down. */
+  private scheduleReconnect(ms: number): void {
+    setTimeout(() => {
+      this.resetForNexus();
+      this.connect();
+    }, ms);
+  }
+
   /** Moves `pos` toward `target` by the distance the player can cover in `dt` ms. */
   private stepToward(target: { x: number; y: number }, dt: number): void {
     const spd = (this.player?.spd ?? 0) + (this.player?.spdBoost ?? 0);
@@ -146,7 +249,7 @@ export class Client {
       return;
     }
     for (const [id, o] of this.objects) {
-      if (o.name && /vault/i.test(o.name)) {
+      if (o.type == PortalType.Vault) {
         this.vaultPortalId = id;
         this.target = { x: o.x, y: o.y };
         console.log(
@@ -162,7 +265,7 @@ export class Client {
     if (this.dumped || !process.env.DUMP_OBJECTS || this.objects.size < 10) {
       return;
     }
-    this.dumped = true;
+    //this.dumped = true;
     console.log(`${this.tag} --- named objects in view (${this.objects.size} total) ---`);
     for (const [id, o] of this.objects) {
       if (o.name) {
@@ -173,7 +276,7 @@ export class Client {
 
   connect(): void {
     this.socket = new net.Socket();
-    this.io = new PacketIO({ socket: this.socket }); // realmlib supplies the packet map
+    this.io = new PacketIO({ socket: this.socket });
     this.io.setMaxListeners(0);
     this.io.on('error', (err: Error) => console.error(`${this.tag} io error:`, err.message));
     this.registerHandlers();
@@ -245,15 +348,22 @@ export class Client {
 
   private registerHandlers(): void {
     this.io.on(PacketType.MAPINFO, (p: MapInfoPacket) => {
+      console.log(`${this.tag} ✓ MapInfo accepted: "${p.name}" (${p.width}x${p.height})`);
+      // handle client in a server queue.
       if (this.inQueue) {
         console.log(`${this.tag} cleared queue — entering`);
         this.inQueue = false;
       }
-      console.log(`${this.tag} ✓ MapInfo accepted: "${p.name}" (${p.width}x${p.height})`);
+      // check if character is in the Vault.
       if (/vault/i.test(p.name)) {
         this.inVault = true;
         this.enteringVault = false;
         console.log(`${this.tag} 🏛  entered the VAULT`);
+      }
+      // check if character is in the Nexus.
+      if (p.name == "Nexus") {
+        this.target = {x: 130, y: 110}
+        console.log(`${this.tag} walking towards {x: 130, y: 110}`);
       }
       if (this.opts.needsNewChar) {
         const create = new CreatePacket();
@@ -274,7 +384,7 @@ export class Client {
       this.objectId = p.objectId;
       this.lastFrameTime = this.time();
       console.log(`${this.tag} ✓✓ IN-WORLD as objectId ${p.objectId}`);
-      // The real client enables ally-projectile visibility on entry.
+      // the real client enables ally-projectile visibility on entry.
       const show = new ShowAllyShootPacket();
       show.toggle = 1;
       this.io.send(show);
@@ -293,16 +403,22 @@ export class Client {
           // processObject captures the class (object type); NewTick only carries stats.
           this.player = processObject(obj);
         } else {
+          // set new or update ObjectData.
           this.objects.set(obj.status.objectId, {
             type: obj.objectType,
             x: obj.status.pos.x,
             y: obj.status.pos.y,
             name: this.objectName(obj),
           });
+          // Track realm portals so we know which realms are open and how full.
+          if (obj.objectType === PortalType.RealmPortal) {
+            this.trackRealmPortal(obj.status.objectId, obj.status.stats, obj.status.pos.x, obj.status.pos.y);
+          }
         }
       }
       for (const id of p.drops) {
         this.objects.delete(id);
+        this.portals.delete(id);
       }
       this.maybeDumpObjects();
       this.findVaultPortal();
@@ -316,8 +432,8 @@ export class Client {
       // Walk toward the vault portal; clear the target once we're on it.
       if (this.target) {
         this.stepToward(this.target, dt);
-        if (Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y) < 0.5) {
-          console.log(`${this.tag} reached vault portal`);
+        if (Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y) < config.arriveThreshold) {
+          console.log(`${this.tag} reached move target`);
           this.target = undefined;
         }
       }
@@ -335,6 +451,9 @@ export class Client {
       for (const status of p.statuses) {
         if (status.objectId === this.objectId) {
           this.player = processObjectStatus(status, this.player);
+        } else if (this.portals.has(status.objectId)) {
+          // Keep realm portal player counts current as they change.
+          this.trackRealmPortal(status.objectId, status.stats, status.pos.x, status.pos.y);
         }
       }
 
@@ -382,6 +501,7 @@ export class Client {
       ack.time = this.lastFrameTime;
       this.io.send(ack);
     });
+  
     this.io.on(PacketType.ENEMYSHOOT, (_p: EnemyShootPacket) => {
       const ack = new ShootAckPacket();
       ack.time = this.lastFrameTime;
@@ -419,7 +539,7 @@ export class Client {
 
     this.io.on(PacketType.RECONNECT, (p: ReconnectPacket) => {
       console.log(`${this.tag} reconnect → ${p.host || this.host} (gameId ${p.gameId})`);
-      this.enteringVault = true; // stop the UsePortal retries; we're transitioning
+      this.enteringVault = true; // stop any UsePortal attempts; we're transitioning
       this.target = undefined;
       if (p.host) this.host = p.host;
       if (p.port !== -1 && p.port !== 0) this.port = p.port;
@@ -434,8 +554,18 @@ export class Client {
     this.io.on(PacketType.FAILURE, (p: FailurePacket) => {
       console.error(`${this.tag} FAILURE ${p.errorId} (${this.describeFailure(p)}): ${p.errorDescription}`);
       if (/banned|abuse|too many/i.test(p.errorDescription)) {
-        console.error(`${this.tag} ⛔ rate-limited/banned by the server — back off before retrying`);
+        const mins = Math.round(config.rateLimitReconnectMs / 60000);
+        console.error(`${this.tag} ⛔ rate-limited/banned — reconnecting in ${mins} min`);
+        this.scheduleReconnect(config.rateLimitReconnectMs);
       }
+    });
+
+    this.io.on(PacketType.TEXT, (_p: TextPacket) => {
+      //console.log(`[chat] [${p.name}] [${p.numStars}] ${p.text}`)
+    });
+
+    this.io.on(PacketType.CHATTOKEN, (p: ChatToken) => {
+      console.log(`${this.tag} ⚠️ received ChatToken packet - token: ${p.token} - host: ${p.host} - port: ${p.port}`)
     });
   }
 }
