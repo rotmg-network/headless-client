@@ -22,6 +22,10 @@ import {
   CreateSuccessPacket,
   QueueInfoPacket,
   ShowAllyShootPacket,
+  UsePortalPacket,
+  VaultContentPacket,
+  ObjectData,
+  StatType,
   RawPacket,
   PlayerData,
   Classes,
@@ -68,6 +72,19 @@ export class Client {
   private player: PlayerData | undefined;
   private inQueue = false;
 
+  // Navigation / vault state.
+  private readonly objects = new Map<number, { type: number; x: number; y: number; name?: string }>();
+  private vaultPortalId: number | undefined;
+  private target: { x: number; y: number } | undefined;
+  private enteringVault = false;
+  private inVault = false;
+  private dumped = false;
+  private lastUsePortalTick = -100;
+  private usePortalAttempts = 0;
+
+  private static readonly SPEED_MIN = 0.004;
+  private static readonly SPEED_MAX = 0.0096;
+
   constructor(private readonly opts: ClientOptions) {
     this.host = opts.host;
   }
@@ -85,6 +102,57 @@ export class Client {
     // In-game failures are ProtocolError codes; pre-entry ones are FailureCode.
     const name = this.objectId !== -1 ? ProtocolError[p.errorId] : FailureCode[p.errorId];
     return name ?? `code ${p.errorId}`;
+  }
+
+  /** The display name of an object, from its NAME stat, if any. */
+  private objectName(obj: ObjectData): string | undefined {
+    return obj.status.stats.find((s) => s.statType === StatType.NAME_STAT)?.stringStatValue || undefined;
+  }
+
+  /** Moves `pos` toward `target` by the distance the player can cover in `dt` ms. */
+  private stepToward(target: { x: number; y: number }, dt: number): void {
+    const spd = (this.player?.spd ?? 0) + (this.player?.spdBoost ?? 0);
+    const tilesPerMs = Client.SPEED_MIN + (spd / 75) * (Client.SPEED_MAX - Client.SPEED_MIN);
+    const step = tilesPerMs * dt;
+    const dx = target.x - this.pos.x;
+    const dy = target.y - this.pos.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= step || dist === 0) {
+      this.pos = { x: target.x, y: target.y };
+    } else {
+      this.pos = { x: this.pos.x + (dx / dist) * step, y: this.pos.y + (dy / dist) * step };
+    }
+  }
+
+  /** Once in the nexus, locate the vault portal by name and start navigating to it. */
+  private findVaultPortal(): void {
+    if (this.vaultPortalId !== undefined || this.inVault || this.enteringVault) {
+      return;
+    }
+    for (const [id, o] of this.objects) {
+      if (o.name && /vault/i.test(o.name)) {
+        this.vaultPortalId = id;
+        this.target = { x: o.x, y: o.y };
+        console.log(
+          `${this.tag} found vault portal "${o.name}" (id ${id}, type ${o.type}) at (${o.x.toFixed(1)}, ${o.y.toFixed(1)}) → navigating`,
+        );
+        return;
+      }
+    }
+  }
+
+  /** With DUMP_OBJECTS=1, log the named objects in view once (portal discovery aid). */
+  private maybeDumpObjects(): void {
+    if (this.dumped || !process.env.DUMP_OBJECTS || this.objects.size < 10) {
+      return;
+    }
+    this.dumped = true;
+    console.log(`${this.tag} --- named objects in view (${this.objects.size} total) ---`);
+    for (const [id, o] of this.objects) {
+      if (o.name) {
+        console.log(`${this.tag}   id ${id} type ${o.type} "${o.name}" @ (${o.x.toFixed(1)}, ${o.y.toFixed(1)})`);
+      }
+    }
   }
 
   connect(): void {
@@ -166,6 +234,11 @@ export class Client {
         this.inQueue = false;
       }
       console.log(`${this.tag} ✓ MapInfo accepted: "${p.name}" (${p.width}x${p.height})`);
+      if (/vault/i.test(p.name)) {
+        this.inVault = true;
+        this.enteringVault = false;
+        console.log(`${this.tag} 🏛  entered the VAULT`);
+      }
       if (this.opts.needsNewChar) {
         const create = new CreatePacket();
         create.classType = Classes.Wizard;
@@ -203,17 +276,41 @@ export class Client {
           this.posKnown = true;
           // processObject captures the class (object type); NewTick only carries stats.
           this.player = processObject(obj);
+        } else {
+          this.objects.set(obj.status.objectId, {
+            type: obj.objectType,
+            x: obj.status.pos.x,
+            y: obj.status.pos.y,
+            name: this.objectName(obj),
+          });
         }
       }
+      for (const id of p.drops) {
+        this.objects.delete(id);
+      }
+      this.maybeDumpObjects();
+      this.findVaultPortal();
     });
 
     this.io.on(PacketType.NEWTICK, (p: NewTickPacket) => {
-      this.lastFrameTime = this.time();
+      const now = this.time();
+      const dt = this.lastFrameTime > 0 ? now - this.lastFrameTime : 0;
+      this.lastFrameTime = now;
+
+      // Walk toward the vault portal; clear the target once we're on it.
+      if (this.target) {
+        this.stepToward(this.target, dt);
+        if (Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y) < 0.5) {
+          console.log(`${this.tag} reached vault portal`);
+          this.target = undefined;
+        }
+      }
+
       const move = new MovePacket();
       move.tickId = p.tickId;
       move.time = p.serverRealTimeMS;
       const record = new MoveRecord();
-      record.time = this.lastFrameTime;
+      record.time = now;
       record.x = this.pos.x;
       record.y = this.pos.y;
       move.records = [record]; // must send >= 1 record or the server drops us
@@ -223,6 +320,24 @@ export class Client {
         if (status.objectId === this.objectId) {
           this.player = processObjectStatus(status, this.player);
         }
+      }
+
+      // On the portal (target cleared, Move already sent so the server knows
+      // we're here): use it, retrying until it reconnects us to the vault.
+      if (
+        this.vaultPortalId !== undefined &&
+        this.target === undefined &&
+        !this.inVault &&
+        !this.enteringVault &&
+        this.usePortalAttempts < 5 &&
+        this.tickCount - this.lastUsePortalTick >= 4
+      ) {
+        console.log(`${this.tag} → UsePortal(${this.vaultPortalId}) (attempt ${this.usePortalAttempts + 1})`);
+        const use = new UsePortalPacket();
+        use.objectId = this.vaultPortalId;
+        this.io.send(use);
+        this.lastUsePortalTick = this.tickCount;
+        this.usePortalAttempts++;
       }
 
       if (++this.tickCount % 30 === 0) {
@@ -263,6 +378,21 @@ export class Client {
       this.io.send(ack);
     });
 
+    this.io.on(PacketType.VAULT_CONTENT, (p: VaultContentPacket) => {
+      this.inVault = true;
+      const line = (label: string, slots: number[]): string => {
+        const items = slots.filter((id) => id !== -1);
+        const list = items.length ? ` → [${items.join(', ')}]` : '';
+        return `${this.tag}    ${label}: ${slots.length} slots, ${items.length} items${list}`;
+      };
+      console.log(`${this.tag} 🏛  VAULT_CONTENT received:`);
+      console.log(line('vault   ', p.vaultContents));
+      console.log(line('material', p.materialContents));
+      console.log(line('gift    ', p.giftContents));
+      console.log(line('potion  ', p.potionContents));
+      console.log(line('spoils  ', p.spoilsContents));
+    });
+
     // Server is full: it places us in a queue and streams position updates.
     // We stay connected and wait — MapInfo arrives once we're through. No
     // game packets are sent meanwhile (NewTick/Update only come after entry).
@@ -273,6 +403,8 @@ export class Client {
 
     this.io.on(PacketType.RECONNECT, (p: ReconnectPacket) => {
       console.log(`${this.tag} reconnect → ${p.host || this.host} (gameId ${p.gameId})`);
+      this.enteringVault = true; // stop the UsePortal retries; we're transitioning
+      this.target = undefined;
       if (p.host) this.host = p.host;
       if (p.port !== -1 && p.port !== 0) this.port = p.port;
       this.gameId = p.gameId;
