@@ -60,6 +60,7 @@ export class Client {
   private tickCount = 0;
   private readonly seenUnknown = new Set<number>();
   private player: PlayerData | undefined;
+  private inQueue = false;
 
   constructor(private readonly opts: ClientOptions) {
     this.host = opts.host;
@@ -123,6 +124,11 @@ export class Client {
         console.log(hexdump(raw.payload));
       }
     });
+    if (mode !== 'unknown') {
+      this.io.on('sentPacket', (sent: { id: number; type: string; size: number }) => {
+        console.log(`${this.tag} » ${sent.type} [id ${sent.id}, ${sent.size}b]`);
+      });
+    }
   }
 
   private sendHello(): void {
@@ -142,6 +148,10 @@ export class Client {
 
   private registerHandlers(): void {
     this.io.on(PacketType.MAPINFO, (p: MapInfoPacket) => {
+      if (this.inQueue) {
+        console.log(`${this.tag} cleared queue — entering`);
+        this.inQueue = false;
+      }
       console.log(`${this.tag} ✓ MapInfo accepted: "${p.name}" (${p.width}x${p.height})`);
       if (this.opts.needsNewChar) {
         const create = new CreatePacket();
@@ -229,8 +239,12 @@ export class Client {
       this.io.send(ack);
     });
 
+    // Server is full: it places us in a queue and streams position updates.
+    // We stay connected and wait — MapInfo arrives once we're through. No
+    // game packets are sent meanwhile (NewTick/Update only come after entry).
     this.io.on(PacketType.QUEUE_INFORMATION, (p: QueueInfoPacket) => {
-      console.log(`${this.tag} login queue ${p.currentPosition}/${p.maxPosition}`);
+      this.inQueue = true;
+      console.log(`${this.tag} in queue — position ${p.currentPosition}/${p.maxPosition}`);
     });
 
     this.io.on(PacketType.RECONNECT, (p: ReconnectPacket) => {
@@ -247,6 +261,9 @@ export class Client {
 
     this.io.on(PacketType.FAILURE, (p: FailurePacket) => {
       console.error(`${this.tag} FAILURE ${p.errorId}: ${p.errorDescription}`);
+      if (/banned|abuse|too many/i.test(p.errorDescription)) {
+        console.error(`${this.tag} ⛔ rate-limited/banned by the server — back off before retrying`);
+      }
     });
   }
 }

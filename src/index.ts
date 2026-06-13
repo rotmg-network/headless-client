@@ -5,8 +5,10 @@ import { Client } from './client';
 
 function pickServer(
   servers: { name: string; address: string }[],
+  index: number,
 ): { name: string; address: string } | undefined {
-  return servers.find((s) => /^US/i.test(s.name)) ?? servers[0];
+  // Spread accounts across distinct servers to avoid per-server limits.
+  return servers.length > 0 ? servers[index % servers.length] : undefined;
 }
 
 async function main(): Promise<void> {
@@ -20,13 +22,13 @@ async function main(): Promise<void> {
   // game server (no socket, no account lock) — useful for testing error handling.
   const loginOnly = process.env.LOGIN_ONLY === '1';
 
-  for (const acc of accounts) {
+  for (const [index, acc] of accounts.entries()) {
     const alias = acc.alias ?? acc.guid;
     try {
       console.log(`[${alias}] logging in...`);
       const { accessToken, clientToken } = await login(acc);
       const { char, servers } = await getCharAndServers(accessToken);
-      const server = pickServer(servers);
+      const server = pickServer(servers, index);
       if (!server) {
         throw new Error('no servers returned');
       }
