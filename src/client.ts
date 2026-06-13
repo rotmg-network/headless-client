@@ -24,7 +24,9 @@ import {
   ShowAllyShootPacket,
   UsePortalPacket,
   VaultContentPacket,
+  EscapePacket,
   ObjectData,
+  ObjectStatusData,
   StatType,
   RawPacket,
   PlayerData,
@@ -40,34 +42,9 @@ import {
   TextPacket,
 } from 'realmlib';
 import { BUILD_VERSION, GAME_ID, GAME_PORT, HELLO_TOKEN } from './constants';
-import { StatData } from 'realmlib';
 import { config } from './config';
+import { RealmPortal, ClientOptions } from './models'
 
-/** A realm portal in the nexus, parsed from its NAME stat. */
-export interface RealmPortal {
-  objectId: number;
-  /** The realm name, e.g. "Horizon". */
-  name: string;
-  /** Players currently in the realm. */
-  players: number;
-  /** Maximum players the realm holds. */
-  maxPlayers: number;
-  /** Server timestamp at which the realm opened. */
-  openedAt: number;
-  x: number;
-  y: number;
-}
-
-export interface ClientOptions {
-  alias: string;
-  accessToken: string;
-  clientToken: string;
-  charId: number;
-  needsNewChar: boolean;
-  host: string;
-  /** Walk into the vault automatically once in the nexus. */
-  autoEnterVault?: boolean;
-}
 
 /**
  * A minimal headless client: logs in, completes the Hello handshake, and
@@ -134,6 +111,33 @@ export class Client {
     this.findVaultPortal(); // act now if the nexus objects are already known
   }
 
+  /**
+   * Sends an ESCAPE packet to return to the nexus. The server replies with a
+   * Reconnect, which is followed automatically.
+   */
+  escape(): void {
+    console.log(`${this.tag} escaping to the nexus`);
+    this.io.send(new EscapePacket());
+    this.wantVault = false; // don't immediately walk back into the vault
+    this.vaultPortalId = undefined;
+    this.target = undefined;
+    this.usePortalAttempts = 0;
+    this.gameId = GAME_ID.NEXUS;
+    this.key = [];
+    this.keyTime = -1;
+  }
+
+  /** Disconnects and connects to the given game server (its nexus). */
+  connectToServer(host: string): void {
+    console.log(`${this.tag} connecting to server ${host}`);
+    this.resetForNexus();
+    this.host = host;
+    if (this.socket && !this.socket.destroyed) {
+      this.socket.destroy();
+    }
+    this.connect();
+  }
+
   private get tag(): string {
     return `[${this.opts.alias}]`;
   }
@@ -168,11 +172,11 @@ export class Client {
     return { name, players: Number(match[2]), maxPlayers: Number(match[3]) };
   }
 
-  /** Records or refreshes a realm portal from its id, stats and position. */
-  private trackRealmPortal(objectId: number, stats: StatData[], x: number, y: number): void {
+  /** Records or refreshes a realm portal from its object status. */
+  private trackRealmPortal(status: ObjectStatusData): void {
     let rawName: string | undefined;
     let openedAt: number | undefined;
-    for (const stat of stats) {
+    for (const stat of status.stats) {
       if (stat.statType === StatType.NAME_STAT) {
         rawName = stat.stringStatValue;
       } else if (stat.statType === StatType.OPENED_AT_TIMESTAMP) {
@@ -186,11 +190,11 @@ export class Client {
     if (!parsed) {
       return;
     }
-    const previous = this.portals.get(objectId);
-    this.portals.set(objectId, {
-      objectId,
-      x,
-      y,
+    const previous = this.portals.get(status.objectId);
+    this.portals.set(status.objectId, {
+      objectId: status.objectId,
+      x: status.pos.x,
+      y: status.pos.y,
       name: parsed.name,
       players: parsed.players,
       maxPlayers: parsed.maxPlayers,
@@ -349,21 +353,18 @@ export class Client {
   private registerHandlers(): void {
     this.io.on(PacketType.MAPINFO, (p: MapInfoPacket) => {
       console.log(`${this.tag} ✓ MapInfo accepted: "${p.name}" (${p.width}x${p.height})`);
+      // Arrived on a new map: the transition is complete, set the vault flag.
+      this.enteringVault = false;
+      this.inVault = /vault/i.test(p.name);
       // handle client in a server queue.
       if (this.inQueue) {
         console.log(`${this.tag} cleared queue — entering`);
         this.inQueue = false;
       }
-      // check if character is in the Vault.
-      if (/vault/i.test(p.name)) {
-        this.inVault = true;
-        this.enteringVault = false;
-        console.log(`${this.tag} 🏛  entered the VAULT`);
-      }
-      // check if character is in the Nexus.
-      if (p.name == "Nexus") {
-        this.target = {x: 130, y: 110}
-        console.log(`${this.tag} walking towards {x: 130, y: 110}`);
+      if (this.inVault) {
+        console.log(`${this.tag} entered Vault`);
+      } else if (p.name == 'Nexus') {
+        console.log(`${this.tag} entered Nexus`);
       }
       if (this.opts.needsNewChar) {
         const create = new CreatePacket();
@@ -412,7 +413,7 @@ export class Client {
           });
           // Track realm portals so we know which realms are open and how full.
           if (obj.objectType === PortalType.RealmPortal) {
-            this.trackRealmPortal(obj.status.objectId, obj.status.stats, obj.status.pos.x, obj.status.pos.y);
+            this.trackRealmPortal(obj.status);
           }
         }
       }
@@ -453,7 +454,7 @@ export class Client {
           this.player = processObjectStatus(status, this.player);
         } else if (this.portals.has(status.objectId)) {
           // Keep realm portal player counts current as they change.
-          this.trackRealmPortal(status.objectId, status.stats, status.pos.x, status.pos.y);
+          this.trackRealmPortal(status);
         }
       }
 

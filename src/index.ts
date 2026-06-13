@@ -1,19 +1,29 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Account, AppEngineError, getCharAndServers, login } from './account-service';
+import { Account, AppEngineError, getCharAndServers, login, ServerInfo } from './account-service';
 import { Client } from './client';
 import { config, setConfig } from './config';
 
 /**
  * A tiny stdin console for altering the global config and issuing commands
  * while the program runs. Commands:
- *   show                 — print the current config
- *   set <key> <value>    — change a config field
- *   vault <alias>        — tell a client to enter the vault
- *   realms <alias>       — list the realm portals a client can see
+ *   show                      — print the current config
+ *   set <key> <value>         — change a config field
+ *   vault <alias>             — tell a client to enter the vault
+ *   escape <alias>            — send the client back to the nexus
+ *   connect <alias> <server>  — connect a client to a server (name or host)
+ *   realms <alias>            — list the realm portals a client can see
  */
-function startConsole(clients: Map<string, Client>): void {
-  console.log('console ready — commands: show | set <key> <value> | vault <alias> | realms <alias>');
+function startConsole(clients: Map<string, Client>, servers: ServerInfo[]): void {
+  console.log('console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a>');
+  const withClient = (alias: string, fn: (client: Client) => void): void => {
+    const client = clients.get(alias);
+    if (client) {
+      fn(client);
+    } else {
+      console.log(`no client: ${alias}`);
+    }
+  };
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk: string) => {
     for (const line of chunk.split('\n')) {
@@ -28,25 +38,25 @@ function startConsole(clients: Map<string, Client>): void {
         case 'set':
           console.log(setConfig(args[0], args[1]) ? `set ${args[0]} = ${args[1]}` : `invalid key/value: ${args[0]}`);
           break;
-        case 'vault': {
-          const client = clients.get(args[0]);
-          if (client) {
-            client.enterVault();
-            console.log(`${args[0]}: entering vault`);
-          } else {
-            console.log(`no client: ${args[0]}`);
+        case 'vault':
+          withClient(args[0], (c) => c.enterVault());
+          break;
+        case 'escape':
+          withClient(args[0], (c) => c.escape());
+          break;
+        case 'connect': {
+          const target = args[1] ?? '';
+          const server = servers.find((s) => s.name.toLowerCase() === target.toLowerCase());
+          if (!server && !target) {
+            console.log('usage: connect <alias> <server-name-or-host>');
+            break;
           }
+          withClient(args[0], (c) => c.connectToServer(server?.address ?? target));
           break;
         }
-        case 'realms': {
-          const client = clients.get(args[0]);
-          if (client) {
-            console.table(client.realmPortals());
-          } else {
-            console.log(`no client: ${args[0]}`);
-          }
+        case 'realms':
+          withClient(args[0], (c) => console.table(c.realmPortals()));
           break;
-        }
         default:
           console.log(`unknown command: ${cmd}`);
       }
@@ -73,6 +83,7 @@ async function main(): Promise<void> {
   // game server (no socket, no account lock) — useful for testing error handling.
   const loginOnly = process.env.LOGIN_ONLY === '1';
   const clients = new Map<string, Client>();
+  let serverList: ServerInfo[] = [];
 
   for (const [index, acc] of accounts.entries()) {
     const alias = acc.alias ?? acc.guid;
@@ -80,6 +91,7 @@ async function main(): Promise<void> {
       console.log(`[${alias}] logging in...`);
       const { accessToken, clientToken } = await login(acc);
       const { char, servers } = await getCharAndServers(accessToken);
+      serverList = servers;
       const server = pickServer(servers, index);
       if (!server) {
         throw new Error('no servers returned');
@@ -116,9 +128,10 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Interactive console for runtime config changes / commands (skip when piped).
-  if (process.stdin.isTTY) {
-    startConsole(clients);
+  // Interactive console for runtime config changes / commands. Active on a TTY,
+  // or force it for piped/automated input with CONSOLE=1.
+  if (process.stdin.isTTY || process.env.CONSOLE === '1') {
+    startConsole(clients, serverList);
   }
 
   // Optional auto-exit so the spike terminates on its own when testing.
