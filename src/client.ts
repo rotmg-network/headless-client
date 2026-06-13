@@ -21,9 +21,15 @@ import {
   EnemyShootPacket,
   CreateSuccessPacket,
   QueueInfoPacket,
+  ShowAllyShootPacket,
   RawPacket,
   PlayerData,
+  Classes,
+  FailureCode,
+  ProtocolError,
+  processObject,
   processObjectStatus,
+  parsePlayerClass,
   hexdump,
 } from 'realmlib';
 import { BUILD_VERSION, GAME_ID, GAME_PORT, HELLO_TOKEN } from './constants';
@@ -72,6 +78,13 @@ export class Client {
 
   private time(): number {
     return Date.now() - this.connectStart;
+  }
+
+  /** Names a FailurePacket error code via realmlib's failure models. */
+  private describeFailure(p: FailurePacket): string {
+    // In-game failures are ProtocolError codes; pre-entry ones are FailureCode.
+    const name = this.objectId !== -1 ? ProtocolError[p.errorId] : FailureCode[p.errorId];
+    return name ?? `code ${p.errorId}`;
   }
 
   connect(): void {
@@ -155,7 +168,7 @@ export class Client {
       console.log(`${this.tag} ✓ MapInfo accepted: "${p.name}" (${p.width}x${p.height})`);
       if (this.opts.needsNewChar) {
         const create = new CreatePacket();
-        create.classType = 768; // Wizard
+        create.classType = Classes.Wizard;
         create.skinType = 0;
         console.log(`${this.tag} creating new character`);
         this.io.send(create);
@@ -172,6 +185,10 @@ export class Client {
       this.objectId = p.objectId;
       this.lastFrameTime = this.time();
       console.log(`${this.tag} ✓✓ IN-WORLD as objectId ${p.objectId}`);
+      // The real client enables ally-projectile visibility on entry.
+      const show = new ShowAllyShootPacket();
+      show.toggle = 1;
+      this.io.send(show);
     });
 
     this.io.on(PacketType.UPDATE, (p: UpdatePacket) => {
@@ -184,7 +201,8 @@ export class Client {
         if (obj.status.objectId === this.objectId) {
           this.pos = { x: obj.status.pos.x, y: obj.status.pos.y };
           this.posKnown = true;
-          this.player = processObjectStatus(obj.status, this.player);
+          // processObject captures the class (object type); NewTick only carries stats.
+          this.player = processObject(obj);
         }
       }
     });
@@ -208,9 +226,11 @@ export class Client {
       }
 
       if (++this.tickCount % 30 === 0) {
-        const hp = this.player ? `hp ${this.player.hp}/${this.player.maxHP} lvl ${this.player.level}` : '';
+        const stats = this.player
+          ? `${parsePlayerClass(this.player.class)} lvl ${this.player.level} hp ${this.player.hp}/${this.player.maxHP}`
+          : '';
         console.log(
-          `${this.tag} alive — tick ${p.tickId}, pos (${this.pos.x.toFixed(1)}, ${this.pos.y.toFixed(1)}) ${hp}`,
+          `${this.tag} alive — tick ${p.tickId}, pos (${this.pos.x.toFixed(1)}, ${this.pos.y.toFixed(1)}) ${stats}`,
         );
       }
     });
@@ -222,7 +242,11 @@ export class Client {
       this.io.send(pong);
     });
 
-    this.io.on(PacketType.SERVERPLAYERSHOOT, (_p: ServerPlayerShootPacket) => {
+    this.io.on(PacketType.SERVERPLAYERSHOOT, (p: ServerPlayerShootPacket) => {
+      // Only acknowledge our own shots, as the real client does.
+      if (p.ownerId !== this.objectId) {
+        return;
+      }
       const ack = new ShootAckPacket();
       ack.time = this.lastFrameTime;
       this.io.send(ack);
@@ -260,7 +284,7 @@ export class Client {
     });
 
     this.io.on(PacketType.FAILURE, (p: FailurePacket) => {
-      console.error(`${this.tag} FAILURE ${p.errorId}: ${p.errorDescription}`);
+      console.error(`${this.tag} FAILURE ${p.errorId} (${this.describeFailure(p)}): ${p.errorDescription}`);
       if (/banned|abuse|too many/i.test(p.errorDescription)) {
         console.error(`${this.tag} ⛔ rate-limited/banned by the server — back off before retrying`);
       }
