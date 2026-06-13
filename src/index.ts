@@ -46,6 +46,7 @@ async function main(): Promise<void> {
         charId: char.charId,
         needsNewChar: char.needsNewChar,
         host: server.address,
+        autoEnterVault: acc.enterVault,
       }).connect();
     } catch (err) {
       if (err instanceof AppEngineError) {

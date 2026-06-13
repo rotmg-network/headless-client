@@ -7,6 +7,8 @@ export interface Account {
   guid: string;
   password: string;
   alias?: string;
+  /** Automatically walk into the vault once in the nexus. Defaults to false. */
+  enterVault?: boolean;
 }
 
 export interface Credentials {

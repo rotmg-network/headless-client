@@ -45,6 +45,8 @@ export interface ClientOptions {
   charId: number;
   needsNewChar: boolean;
   host: string;
+  /** Walk into the vault automatically once in the nexus. */
+  autoEnterVault?: boolean;
 }
 
 /**
@@ -73,6 +75,7 @@ export class Client {
   private inQueue = false;
 
   // Navigation / vault state.
+  private wantVault = false;
   private readonly objects = new Map<number, { type: number; x: number; y: number; name?: string }>();
   private vaultPortalId: number | undefined;
   private target: { x: number; y: number } | undefined;
@@ -87,6 +90,19 @@ export class Client {
 
   constructor(private readonly opts: ClientOptions) {
     this.host = opts.host;
+    this.wantVault = opts.autoEnterVault ?? false;
+  }
+
+  /**
+   * Requests that the client walk to the vault portal and enter the vault.
+   * Takes effect once in the nexus; safe to call before or after connecting.
+   */
+  enterVault(): void {
+    if (this.inVault) {
+      return;
+    }
+    this.wantVault = true;
+    this.findVaultPortal(); // act now if the nexus objects are already known
   }
 
   private get tag(): string {
@@ -126,7 +142,7 @@ export class Client {
 
   /** Once in the nexus, locate the vault portal by name and start navigating to it. */
   private findVaultPortal(): void {
-    if (this.vaultPortalId !== undefined || this.inVault || this.enteringVault) {
+    if (!this.wantVault || this.vaultPortalId !== undefined || this.inVault || this.enteringVault) {
       return;
     }
     for (const [id, o] of this.objects) {
