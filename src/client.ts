@@ -21,8 +21,9 @@ import {
   EnemyShootPacket,
   CreateSuccessPacket,
   QueueInfoPacket,
+  RawPacket,
+  hexdump,
 } from 'realmlib';
-import { PACKET_MAP } from './packet-map';
 import { BUILD_VERSION, GAME_ID, GAME_PORT, HELLO_TOKEN } from './constants';
 
 export interface ClientOptions {
@@ -55,6 +56,7 @@ export class Client {
   private connectStart = 0;
   private lastFrameTime = 0;
   private tickCount = 0;
+  private readonly seenUnknown = new Set<number>();
 
   constructor(private readonly opts: ClientOptions) {
     this.host = opts.host;
@@ -70,10 +72,11 @@ export class Client {
 
   connect(): void {
     this.socket = new net.Socket();
-    this.io = new PacketIO({ socket: this.socket, packetMap: PACKET_MAP });
+    this.io = new PacketIO({ socket: this.socket }); // realmlib supplies the packet map
     this.io.setMaxListeners(0);
     this.io.on('error', (err: Error) => console.error(`${this.tag} io error:`, err.message));
     this.registerHandlers();
+    this.setupDebug();
 
     this.socket.on('connect', () => {
       this.connectStart = Date.now();
@@ -85,6 +88,38 @@ export class Client {
 
     console.log(`${this.tag} connecting to ${this.host}:${this.port}`);
     this.socket.connect(this.port, this.host);
+  }
+
+  /**
+   * Wires up packet debugging. Unknown packet ids are always reported once.
+   * Set DEBUG_PACKETS to inspect traffic:
+   *   types   — log every incoming packet type
+   *   hex     — log every type and hexdump its payload
+   *   unknown — log + hexdump only packets with no mapped type
+   */
+  private setupDebug(): void {
+    this.io.on('unknownPacket', ({ id, size }: { id: number; size: number }) => {
+      if (this.seenUnknown.has(id)) {
+        return;
+      }
+      this.seenUnknown.add(id);
+      console.log(`${this.tag} ⚠ unknown packet id ${id} (${size}b) — not in packet map`);
+    });
+
+    const mode = process.env.DEBUG_PACKETS;
+    if (!mode) {
+      return;
+    }
+    this.io.on('rawPacket', (raw: RawPacket) => {
+      if (mode === 'unknown' && raw.type) {
+        return;
+      }
+      const label = raw.type ?? `UNKNOWN(${raw.id})`;
+      console.log(`${this.tag} « ${label} [id ${raw.id}, ${raw.payload.length}b]`);
+      if (mode === 'hex' || (mode === 'unknown' && !raw.type)) {
+        console.log(hexdump(raw.payload));
+      }
+    });
   }
 
   private sendHello(): void {
