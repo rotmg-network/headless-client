@@ -22,6 +22,8 @@ import {
   CreateSuccessPacket,
   QueueInfoPacket,
   RawPacket,
+  PlayerData,
+  processObjectStatus,
   hexdump,
 } from 'realmlib';
 import { BUILD_VERSION, GAME_ID, GAME_PORT, HELLO_TOKEN } from './constants';
@@ -57,6 +59,7 @@ export class Client {
   private lastFrameTime = 0;
   private tickCount = 0;
   private readonly seenUnknown = new Set<number>();
+  private player: PlayerData | undefined;
 
   constructor(private readonly opts: ClientOptions) {
     this.host = opts.host;
@@ -171,6 +174,7 @@ export class Client {
         if (obj.status.objectId === this.objectId) {
           this.pos = { x: obj.status.pos.x, y: obj.status.pos.y };
           this.posKnown = true;
+          this.player = processObjectStatus(obj.status, this.player);
         }
       }
     });
@@ -187,8 +191,17 @@ export class Client {
       move.records = [record]; // must send >= 1 record or the server drops us
       this.io.send(move);
 
+      for (const status of p.statuses) {
+        if (status.objectId === this.objectId) {
+          this.player = processObjectStatus(status, this.player);
+        }
+      }
+
       if (++this.tickCount % 30 === 0) {
-        console.log(`${this.tag} alive — tick ${p.tickId}, pos (${this.pos.x.toFixed(1)}, ${this.pos.y.toFixed(1)})`);
+        const hp = this.player ? `hp ${this.player.hp}/${this.player.maxHP} lvl ${this.player.level}` : '';
+        console.log(
+          `${this.tag} alive — tick ${p.tickId}, pos (${this.pos.x.toFixed(1)}, ${this.pos.y.toFixed(1)}) ${hp}`,
+        );
       }
     });
 
