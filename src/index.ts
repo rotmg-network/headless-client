@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Account, getCharAndServers, login } from './account-service';
+import { Account, AppEngineError, getCharAndServers, login } from './account-service';
 import { Client } from './client';
 
 function pickServer(
@@ -16,6 +16,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const accounts: Account[] = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // LOGIN_ONLY exercises the auth + char/list layer without connecting to a
+  // game server (no socket, no account lock) — useful for testing error handling.
+  const loginOnly = process.env.LOGIN_ONLY === '1';
 
   for (const acc of accounts) {
     const alias = acc.alias ?? acc.guid;
@@ -28,9 +31,12 @@ async function main(): Promise<void> {
         throw new Error('no servers returned');
       }
       console.log(
-        `[${alias}] token OK — char ${char.charId} (${char.needsNewChar ? 'new' : 'existing'}), ` +
+        `[${alias}] ready — char ${char.charId} (${char.needsNewChar ? 'new' : 'existing'}), ` +
           `${servers.length} servers, using ${server.name} (${server.address})`,
       );
+      if (loginOnly) {
+        continue;
+      }
       new Client({
         alias,
         accessToken,
@@ -40,8 +46,17 @@ async function main(): Promise<void> {
         host: server.address,
       }).connect();
     } catch (err) {
-      console.error(`[${alias}] login error:`, (err as Error).message);
+      if (err instanceof AppEngineError) {
+        const retry = err.retryAfterSeconds ? ` retry in ${err.retryAfterSeconds}s` : '';
+        console.error(`[${alias}] ✗ ${err.kind}: ${err.message}${retry}  [server: ${err.detail}]`);
+      } else {
+        console.error(`[${alias}] ✗ error: ${(err as Error).message}`);
+      }
     }
+  }
+
+  if (loginOnly) {
+    process.exit(0);
   }
 
   // Optional auto-exit so the spike terminates on its own when testing.

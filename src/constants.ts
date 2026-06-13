@@ -3,6 +3,7 @@
  */
 export const ENDPOINTS = {
   VERIFY: 'https://www.realmofthemadgod.com/account/verify',
+  VERIFY_TOKEN: 'https://www.realmofthemadgod.com/account/verifyAccessTokenClient',
   CHAR_LIST: 'https://www.realmofthemadgod.com/char/list',
   SERVERS: 'https://www.realmofthemadgod.com/account/servers',
 };
