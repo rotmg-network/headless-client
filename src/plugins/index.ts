@@ -1,16 +1,6 @@
-import { Plugin } from './plugin';
-import { AutoVault } from './auto-vault';
-import { ChatLogger } from './chat-logger';
+// Importing each plugin module runs its @Plugin decorator, registering it.
+// Add new plugins here (or switch to dynamic discovery later).
+import './auto-vault';
+import './chat-logger';
 
-export type PluginClass = new () => Plugin;
-
-/**
- * The plugin registry: name -> class. Add new plugins here so they can be
- * referenced by name from accounts.json or the console.
- */
-export const PLUGINS: Record<string, PluginClass> = {
-  AutoVault,
-  ChatLogger,
-};
-
-export { Plugin };
+export * from './decorators';

@@ -61,9 +61,10 @@ function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugi
           withClient(args[0], (c) => console.table(c.realmPortals()));
           break;
         case 'plugins':
-          withClient(args[0], (c) =>
-            console.log(`loaded: [${plugins.loaded(c).join(', ')}]  available: [${plugins.available().join(', ')}]`),
-          );
+          withClient(args[0], (c) => {
+            console.log(`[${c.alias}] loaded: [${plugins.loaded(c).join(', ') || 'none'}]`);
+            console.table(plugins.available());
+          });
           break;
         case 'plugin': {
           // plugin <alias> load|unload <name>

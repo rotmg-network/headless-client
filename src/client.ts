@@ -46,6 +46,7 @@ import {
 } from 'realmlib';
 import { BUILD_VERSION, GAME_ID, GAME_PORT, HELLO_TOKEN } from './constants';
 import { config } from './config';
+import { ClientEvent } from './events';
 import { RealmPortal, ClientOptions } from './models'
 
 
@@ -263,7 +264,7 @@ export class Client extends EventEmitter {
         `${this.tag} realm portal: ${parsed.name} (${parsed.players}/${parsed.maxPlayers}) opened ${openedAt ?? '?'}`,
       );
     }
-    this.emit('realmPortal', portal);
+    this.emit(ClientEvent.RealmPortal, portal);
   }
 
   /** Clears state tied to the current map; call on any map change. */
@@ -369,11 +370,11 @@ export class Client extends EventEmitter {
       this.connectStart = Date.now();
       console.log(`${this.tag} socket connected → sending Hello (gameId ${this.gameId})`);
       this.sendHello();
-      this.emit('connected');
+      this.emit(ClientEvent.Connected);
     });
     this.socket.on('close', () => {
       console.log(`${this.tag} socket closed`);
-      this.emit('disconnect');
+      this.emit(ClientEvent.Disconnect);
     });
     this.socket.on('error', (err) => console.error(`${this.tag} socket error:`, err.message));
 
@@ -444,13 +445,13 @@ export class Client extends EventEmitter {
         console.log(`${this.tag} cleared queue — entering`);
         this.inQueue = false;
       }
-      this.emit('mapChange', p.name);
+      this.emit(ClientEvent.MapChange, p.name);
       if (this.inVault) {
         console.log(`${this.tag} entered Vault`);
-        this.emit('enterVault');
+        this.emit(ClientEvent.EnterVault);
       } else if (p.name == 'Nexus') {
         console.log(`${this.tag} entered Nexus`);
-        this.emit('enterNexus');
+        this.emit(ClientEvent.EnterNexus);
       }
       if (this.opts.needsNewChar) {
         const create = new CreatePacket();
@@ -475,7 +476,7 @@ export class Client extends EventEmitter {
       const show = new ShowAllyShootPacket();
       show.toggle = 1;
       this.io.send(show);
-      this.emit('ready', p.objectId);
+      this.emit(ClientEvent.Ready, p.objectId);
     });
 
     this.io.on(PacketType.UPDATE, (p: UpdatePacket) => {
@@ -524,7 +525,7 @@ export class Client extends EventEmitter {
           console.log(`${this.tag} reached move target`);
           const reached = this.target;
           this.target = undefined;
-          this.emit('reachedTarget', reached);
+          this.emit(ClientEvent.ReachedTarget, reached);
         }
       }
 
@@ -573,7 +574,7 @@ export class Client extends EventEmitter {
           `${this.tag} alive — tick ${p.tickId}, pos (${this.pos.x.toFixed(1)}, ${this.pos.y.toFixed(1)}) ${stats}`,
         );
       }
-      this.emit('tick', this.player);
+      this.emit(ClientEvent.Tick, this.player);
     });
 
     this.io.on(PacketType.PING, (p: PingPacket) => {
@@ -618,7 +619,7 @@ export class Client extends EventEmitter {
       console.log(line('gift    ', p.giftContents));
       console.log(line('potion  ', p.potionContents));
       console.log(line('spoils  ', p.spoilsContents));
-      this.emit('vaultContents', p);
+      this.emit(ClientEvent.VaultContents, p);
     });
 
     // Server is full: it places us in a queue and streams position updates.
@@ -645,7 +646,7 @@ export class Client extends EventEmitter {
 
     this.io.on(PacketType.FAILURE, (p: FailurePacket) => {
       console.error(`${this.tag} FAILURE ${p.errorId} (${this.describeFailure(p)}): ${p.errorDescription}`);
-      this.emit('failure', p);
+      this.emit(ClientEvent.Failure, p);
       if (/banned|abuse|too many/i.test(p.errorDescription)) {
         const mins = Math.round(config.rateLimitReconnectMs / 60000);
         console.error(`${this.tag} ⛔ rate-limited/banned — reconnecting in ${mins} min`);
@@ -663,7 +664,7 @@ export class Client extends EventEmitter {
 
     this.io.on(PacketType.DEATH, (p: DeathPacket) => {
       console.log(`${this.tag} 💀 died`);
-      this.emit('death', p);
+      this.emit(ClientEvent.Death, p);
     });
 
     // Re-attach plugin packet hooks: bridge every subscribed type onto this io.

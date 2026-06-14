@@ -1,26 +1,19 @@
-import { PacketType, TextPacket } from 'realmlib';
+import { TextPacket } from 'realmlib';
 import { Client } from '../client';
-import { Plugin } from './plugin';
+import { Plugin, PacketHook } from './decorators';
 
-/**
- * Logs in-game chat. Demonstrates hooking a raw packet — subscribing makes
- * realmlib start parsing TEXT packets for this client.
- */
-export class ChatLogger implements Plugin {
-  private client: Client | undefined;
-
-  private readonly onText = (p: TextPacket): void => {
-    if (p.text) {
-      console.log(`[${this.client?.alias}] <${p.name}> ${p.text}`);
+/** Logs in-game chat by hooking the TEXT packet (type inferred from the param). */
+@Plugin({
+  name: 'ChatLogger',
+  description: 'Logs in-game chat messages.',
+  author: 'realmlib',
+  version: '1.0.0',
+})
+export class ChatLogger {
+  @PacketHook()
+  onText(client: Client, text: TextPacket): void {
+    if (text.text) {
+      console.log(`[${client.alias}] <${text.name}> ${text.text}`);
     }
-  };
-
-  attach(client: Client): void {
-    this.client = client;
-    client.onPacket(PacketType.TEXT, this.onText);
-  }
-
-  detach(): void {
-    this.client?.off(PacketType.TEXT, this.onText);
   }
 }
