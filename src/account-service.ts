@@ -9,6 +9,8 @@ export interface Account {
   alias?: string;
   /** Automatically walk into the vault once in the nexus. Defaults to false. */
   enterVault?: boolean;
+  /** Names of plugins to load for this account (from the plugin registry). */
+  plugins?: string[];
 }
 
 export interface Credentials {

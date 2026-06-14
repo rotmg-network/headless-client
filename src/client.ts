@@ -1,5 +1,8 @@
 import * as net from 'net';
+import { EventEmitter } from 'events';
 import {
+  Packet,
+  DeathPacket,
   PacketIO,
   PacketType,
   HelloPacket,
@@ -47,13 +50,16 @@ import { RealmPortal, ClientOptions } from './models'
 
 
 /**
- * A minimal headless client: logs in, completes the Hello handshake, and
- * runs the keep-alive loop (Move / Pong / UpdateAck / ShootAck) so the
- * account connects and stays in-world.
+ * A headless client for one account. Logs in, runs the keep-alive loop, and
+ * acts as the event surface plugins hook into: it re-emits incoming packets by
+ * PacketType and emits higher-level game events ('ready', 'enterVault', …).
  */
-export class Client {
+export class Client extends EventEmitter {
   private socket!: net.Socket;
   private io!: PacketIO;
+
+  /** Packet types any plugin has hooked; bridged onto each fresh io. */
+  private readonly subscribedPacketTypes = new Set<PacketType>();
 
   // Current server / map state
   private host: string;
@@ -91,13 +97,61 @@ export class Client {
   private static readonly SPEED_MAX = 0.0096;
 
   constructor(private readonly opts: ClientOptions) {
+    super();
+    this.setMaxListeners(0); // plugins may add many listeners
     this.host = opts.host;
     this.wantVault = opts.autoEnterVault ?? config.autoEnterVault;
+  }
+
+  //#region plugin-facing surface
+
+  /** Hooks an incoming packet type. realmlib starts parsing the type on demand. */
+  onPacket<T extends Packet>(type: PacketType, handler: (packet: T) => void): this {
+    if (!this.subscribedPacketTypes.has(type)) {
+      this.subscribedPacketTypes.add(type);
+      // Bridge io -> this for the type if already connected; otherwise
+      // registerHandlers() will bridge it on (re)connect.
+      this.bridgePacket(type);
+    }
+    return this.on(type, handler as (packet: Packet) => void);
+  }
+
+  /** Sends a packet to the server. */
+  send(packet: Packet): void {
+    this.io?.send(packet);
+  }
+
+  /** Walks the player toward a position (cleared on arrival, emits 'reachedTarget'). */
+  moveTo(target: { x: number; y: number }): void {
+    this.target = { x: target.x, y: target.y };
+  }
+
+  get alias(): string {
+    return this.opts.alias;
+  }
+  getPlayer(): PlayerData | undefined {
+    return this.player;
+  }
+  getPosition(): { x: number; y: number } {
+    return { x: this.pos.x, y: this.pos.y };
+  }
+  getObjectId(): number {
+    return this.objectId;
+  }
+  isInVault(): boolean {
+    return this.inVault;
   }
 
   /** The realm portals currently tracked in the nexus. */
   realmPortals(): RealmPortal[] {
     return [...this.portals.values()];
+  }
+
+  //#endregion
+
+  /** Bridges an io packet emission onto this client's emitter (for the current io). */
+  private bridgePacket(type: PacketType): void {
+    this.io?.on(type, (packet: Packet) => this.emit(type, packet));
   }
 
   /**
@@ -194,7 +248,7 @@ export class Client {
       return;
     }
     const previous = this.portals.get(status.objectId);
-    this.portals.set(status.objectId, {
+    const portal: RealmPortal = {
       objectId: status.objectId,
       x: status.pos.x,
       y: status.pos.y,
@@ -202,12 +256,14 @@ export class Client {
       players: parsed.players,
       maxPlayers: parsed.maxPlayers,
       openedAt: openedAt ?? previous?.openedAt ?? 0,
-    });
+    };
+    this.portals.set(status.objectId, portal);
     if (!previous) {
       console.log(
         `${this.tag} realm portal: ${parsed.name} (${parsed.players}/${parsed.maxPlayers}) opened ${openedAt ?? '?'}`,
       );
     }
+    this.emit('realmPortal', portal);
   }
 
   /** Clears state tied to the current map; call on any map change. */
@@ -313,8 +369,12 @@ export class Client {
       this.connectStart = Date.now();
       console.log(`${this.tag} socket connected → sending Hello (gameId ${this.gameId})`);
       this.sendHello();
+      this.emit('connected');
     });
-    this.socket.on('close', () => console.log(`${this.tag} socket closed`));
+    this.socket.on('close', () => {
+      console.log(`${this.tag} socket closed`);
+      this.emit('disconnect');
+    });
     this.socket.on('error', (err) => console.error(`${this.tag} socket error:`, err.message));
 
     console.log(`${this.tag} connecting to ${this.host}:${this.port}`);
@@ -384,10 +444,13 @@ export class Client {
         console.log(`${this.tag} cleared queue — entering`);
         this.inQueue = false;
       }
+      this.emit('mapChange', p.name);
       if (this.inVault) {
         console.log(`${this.tag} entered Vault`);
+        this.emit('enterVault');
       } else if (p.name == 'Nexus') {
         console.log(`${this.tag} entered Nexus`);
+        this.emit('enterNexus');
       }
       if (this.opts.needsNewChar) {
         const create = new CreatePacket();
@@ -412,6 +475,7 @@ export class Client {
       const show = new ShowAllyShootPacket();
       show.toggle = 1;
       this.io.send(show);
+      this.emit('ready', p.objectId);
     });
 
     this.io.on(PacketType.UPDATE, (p: UpdatePacket) => {
@@ -453,12 +517,14 @@ export class Client {
       const dt = this.lastFrameTime > 0 ? now - this.lastFrameTime : 0;
       this.lastFrameTime = now;
 
-      // Walk toward the vault portal; clear the target once we're on it.
+      // Walk toward the current target; clear it once we're on it.
       if (this.target) {
         this.stepToward(this.target, dt);
         if (Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y) < config.arriveThreshold) {
           console.log(`${this.tag} reached move target`);
+          const reached = this.target;
           this.target = undefined;
+          this.emit('reachedTarget', reached);
         }
       }
 
@@ -507,6 +573,7 @@ export class Client {
           `${this.tag} alive — tick ${p.tickId}, pos (${this.pos.x.toFixed(1)}, ${this.pos.y.toFixed(1)}) ${stats}`,
         );
       }
+      this.emit('tick', this.player);
     });
 
     this.io.on(PacketType.PING, (p: PingPacket) => {
@@ -551,6 +618,7 @@ export class Client {
       console.log(line('gift    ', p.giftContents));
       console.log(line('potion  ', p.potionContents));
       console.log(line('spoils  ', p.spoilsContents));
+      this.emit('vaultContents', p);
     });
 
     // Server is full: it places us in a queue and streams position updates.
@@ -577,6 +645,7 @@ export class Client {
 
     this.io.on(PacketType.FAILURE, (p: FailurePacket) => {
       console.error(`${this.tag} FAILURE ${p.errorId} (${this.describeFailure(p)}): ${p.errorDescription}`);
+      this.emit('failure', p);
       if (/banned|abuse|too many/i.test(p.errorDescription)) {
         const mins = Math.round(config.rateLimitReconnectMs / 60000);
         console.error(`${this.tag} ⛔ rate-limited/banned — reconnecting in ${mins} min`);
@@ -591,5 +660,15 @@ export class Client {
     this.io.on(PacketType.CHATTOKEN, (p: ChatToken) => {
       console.log(`${this.tag} ⚠️ received ChatToken packet - token: ${p.token} - host: ${p.host} - port: ${p.port}`)
     });
+
+    this.io.on(PacketType.DEATH, (p: DeathPacket) => {
+      console.log(`${this.tag} 💀 died`);
+      this.emit('death', p);
+    });
+
+    // Re-attach plugin packet hooks: bridge every subscribed type onto this io.
+    for (const type of this.subscribedPacketTypes) {
+      this.bridgePacket(type);
+    }
   }
 }

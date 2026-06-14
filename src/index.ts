@@ -3,6 +3,7 @@ import * as path from 'path';
 import { Account, AppEngineError, getCharAndServers, login, ServerInfo } from './account-service';
 import { Client } from './client';
 import { config, setConfig } from './config';
+import { PluginManager } from './plugin-manager';
 
 /**
  * A tiny stdin console for altering the global config and issuing commands
@@ -14,8 +15,10 @@ import { config, setConfig } from './config';
  *   connect <alias> <server>  — connect a client to a server (name or host)
  *   realms <alias>            — list the realm portals a client can see
  */
-function startConsole(clients: Map<string, Client>, servers: ServerInfo[]): void {
-  console.log('console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a>');
+function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugins: PluginManager): void {
+  console.log(
+    'console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a> | plugins <a> | plugin <a> load|unload <name>',
+  );
   const withClient = (alias: string, fn: (client: Client) => void): void => {
     const client = clients.get(alias);
     if (client) {
@@ -57,6 +60,25 @@ function startConsole(clients: Map<string, Client>, servers: ServerInfo[]): void
         case 'realms':
           withClient(args[0], (c) => console.table(c.realmPortals()));
           break;
+        case 'plugins':
+          withClient(args[0], (c) =>
+            console.log(`loaded: [${plugins.loaded(c).join(', ')}]  available: [${plugins.available().join(', ')}]`),
+          );
+          break;
+        case 'plugin': {
+          // plugin <alias> load|unload <name>
+          const [alias, action, name] = args;
+          withClient(alias, (c) => {
+            if (action === 'load') {
+              plugins.load(c, name);
+            } else if (action === 'unload') {
+              plugins.unload(c, name);
+            } else {
+              console.log('usage: plugin <alias> load|unload <name>');
+            }
+          });
+          break;
+        }
         default:
           console.log(`unknown command: ${cmd}`);
       }
@@ -83,6 +105,7 @@ async function main(): Promise<void> {
   // game server (no socket, no account lock) — useful for testing error handling.
   const loginOnly = process.env.LOGIN_ONLY === '1';
   const clients = new Map<string, Client>();
+  const plugins = new PluginManager();
   let serverList: ServerInfo[] = [];
 
   for (const [index, acc] of accounts.entries()) {
@@ -113,6 +136,9 @@ async function main(): Promise<void> {
         autoEnterVault: acc.enterVault,
       });
       clients.set(alias, client);
+      for (const name of acc.plugins ?? []) {
+        plugins.load(client, name);
+      }
       client.connect();
     } catch (err) {
       if (err instanceof AppEngineError) {
@@ -131,7 +157,7 @@ async function main(): Promise<void> {
   // Interactive console for runtime config changes / commands. Active on a TTY,
   // or force it for piped/automated input with CONSOLE=1.
   if (process.stdin.isTTY || process.env.CONSOLE === '1') {
-    startConsole(clients, serverList);
+    startConsole(clients, serverList, plugins);
   }
 
   // Optional auto-exit so the spike terminates on its own when testing.
