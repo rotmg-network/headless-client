@@ -4,3 +4,4 @@ accounts.json
 .token-cache.json
 *.log
 *.tsbuildinfo
+notes.md
