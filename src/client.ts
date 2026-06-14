@@ -84,6 +84,7 @@ export class Client {
   private dumped = false;
   private lastUsePortalTick = -100;
   private usePortalAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Movement speed multipliers
   private static readonly SPEED_MIN = 0.004;
@@ -116,12 +117,14 @@ export class Client {
    * Reconnect, which is followed automatically.
    */
   escape(): void {
+    if (!this.io) {
+      console.log(`${this.tag} escape ignored — not connected`);
+      return;
+    }
     console.log(`${this.tag} escaping to the nexus`);
     this.io.send(new EscapePacket());
     this.wantVault = false; // don't immediately walk back into the vault
-    this.vaultPortalId = undefined;
-    this.target = undefined;
-    this.usePortalAttempts = 0;
+    this.clearNavState();
     this.gameId = GAME_ID.NEXUS;
     this.key = [];
     this.keyTime = -1;
@@ -207,26 +210,42 @@ export class Client {
     }
   }
 
-  /** Resets per-connection state for a fresh nexus connection. */
-  private resetForNexus(): void {
-    this.gameId = GAME_ID.NEXUS;
-    this.key = [];
-    this.keyTime = -1;
-    this.posKnown = false;
+  /** Clears state tied to the current map; call on any map change. */
+  private clearMapState(): void {
     this.objectId = -1;
-    this.inVault = false;
-    this.enteringVault = false;
-    this.vaultPortalId = undefined;
-    this.target = undefined;
-    this.usePortalAttempts = 0;
-    this.lastUsePortalTick = -100;
+    this.posKnown = false;
+    this.player = undefined;
+    this.lastFrameTime = 0;
     this.objects.clear();
     this.portals.clear();
   }
 
+  /** Clears vault navigation progress (target, portal id, retry counters). */
+  private clearNavState(): void {
+    this.target = undefined;
+    this.vaultPortalId = undefined;
+    this.usePortalAttempts = 0;
+    this.lastUsePortalTick = -100;
+  }
+
+  /** Resets to a fresh nexus connection (used after a rate-limit cooldown). */
+  private resetForNexus(): void {
+    this.clearMapState();
+    this.clearNavState();
+    this.gameId = GAME_ID.NEXUS;
+    this.key = [];
+    this.keyTime = -1;
+    this.inVault = false;
+    this.enteringVault = false;
+  }
+
   /** Reconnects to the nexus after `ms`, e.g. once a rate-limit has cooled down. */
   private scheduleReconnect(ms: number): void {
-    setTimeout(() => {
+    if (this.reconnectTimer) {
+      return; // already pending; don't stack reconnects on repeated failures
+    }
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
       this.resetForNexus();
       this.connect();
     }, ms);
@@ -279,6 +298,10 @@ export class Client {
   }
 
   connect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer); // a (re)connect cancels any pending scheduled one
+      this.reconnectTimer = undefined;
+    }
     this.socket = new net.Socket();
     this.io = new PacketIO({ socket: this.socket });
     this.io.setMaxListeners(0);
@@ -540,14 +563,14 @@ export class Client {
 
     this.io.on(PacketType.RECONNECT, (p: ReconnectPacket) => {
       console.log(`${this.tag} reconnect → ${p.host || this.host} (gameId ${p.gameId})`);
+      this.clearMapState(); // we're loading a new map; drop the old objects/portals
+      this.clearNavState();
       this.enteringVault = true; // stop any UsePortal attempts; we're transitioning
-      this.target = undefined;
       if (p.host) this.host = p.host;
       if (p.port !== -1 && p.port !== 0) this.port = p.port;
       this.gameId = p.gameId;
       this.key = p.key;
       this.keyTime = p.keyTime;
-      this.posKnown = false;
       this.socket.destroy();
       setTimeout(() => this.connect(), 1000);
     });
