@@ -2,5 +2,7 @@
 // Add new plugins here (or switch to dynamic discovery later).
 import './auto-vault';
 import './chat-logger';
+import './packet-logger';
+import './realm-finder';
 
 export * from './decorators';

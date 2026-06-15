@@ -50,7 +50,15 @@ DEBUG_PACKETS=unknown npm start  # log + hexdump only unmapped packet ids
 
 Unmapped packet ids are always reported once even without `DEBUG_PACKETS`.
 
+## Plugins
+
+Behaviour is added via decorator-based plugins that hook packets and game
+events. Set `"plugins": ["ChatLogger"]` on an account, or load at runtime with
+the `plugin <alias> load <name>` console command. See [docs/PLUGINS.md](docs/PLUGINS.md)
+for the authoring guide; bundled examples are `ChatLogger`, `PacketLogger`,
+`AutoVault`, and `RealmFinder`.
+
 ## Status
 
-Early connection spike. Next: game-state tracking, a plugin/hook system
-(modeled on nrelay), reconnect/proxy handling, and multi-account support.
+Working clientless client + plugin system. Next: SOCKS proxy support for
+multi-account, fuller game-state tracking, and a client-side test suite.
