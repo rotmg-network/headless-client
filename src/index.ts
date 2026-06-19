@@ -4,6 +4,7 @@ import { Account, AppEngineError, getCharAndServers, login, ServerInfo } from '.
 import { Client } from './client';
 import { config, setConfig } from './config';
 import { PluginManager } from './plugin-manager';
+import { RealmHostMapper } from './plugins/realm-host-mapper';
 
 /**
  * A tiny stdin console for altering the global config and issuing commands
@@ -14,10 +15,11 @@ import { PluginManager } from './plugin-manager';
  *   escape <alias>            — send the client back to the nexus
  *   connect <alias> <server>  — connect a client to a server (name or host)
  *   realms <alias>            — list the realm portals a client can see
+ *   hosts <alias>             — list RealmHostMapper's portal -> host table
  */
 function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugins: PluginManager): void {
   console.log(
-    'console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a> | plugins <a> | plugin <a> load|unload <name>',
+    'console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a> | hosts <a> | plugins <a> | plugin <a> load|unload <name>',
   );
   const withClient = (alias: string, fn: (client: Client) => void): void => {
     const client = clients.get(alias);
@@ -59,6 +61,16 @@ function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugi
         }
         case 'realms':
           withClient(args[0], (c) => console.table(c.realmPortals()));
+          break;
+        case 'hosts':
+          withClient(args[0], (c) => {
+            const mapper = plugins.get<RealmHostMapper>(c, 'RealmHostMapper');
+            if (!mapper) {
+              console.log(`[${c.alias}] RealmHostMapper is not loaded`);
+              return;
+            }
+            console.table(mapper.portals());
+          });
           break;
         case 'plugins':
           withClient(args[0], (c) => {

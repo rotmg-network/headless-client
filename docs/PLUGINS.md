@@ -110,6 +110,7 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
   `accounts.json`. It loads when that client connects.
 - **Runtime console:**
   - `plugins <alias>` — list loaded plugins + all available (name + description)
+  - `hosts <alias>` — print `RealmHostMapper`'s portal -> hostname table
   - `plugin <alias> load <name>`
   - `plugin <alias> unload <name>` — removes all its hooks cleanly
 
@@ -121,3 +122,4 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
 | `PacketLogger` | several `@PacketHook`s + an `@EventHook` (Death) |
 | `AutoVault` | `@EventHook`s driving a command (`enterVault`) |
 | `RealmFinder` | reading `realmPortals()` from an event hook; pure selection logic |
+| `RealmHostMapper` | multi-step event/packet workflow: visit portals, record Reconnect hosts, escape back |

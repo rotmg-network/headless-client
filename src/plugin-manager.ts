@@ -75,6 +75,11 @@ export class PluginManager {
     return [...(this.byClient.get(client)?.keys() ?? [])];
   }
 
+  /** Returns a loaded plugin instance for direct inspection/commands. */
+  get<T extends object>(client: Client, name: string): T | undefined {
+    return this.byClient.get(client)?.get(name)?.instance as T | undefined;
+  }
+
   /** All registered plugins (name + description). */
   available(): { name: string; description: string }[] {
     return allPluginInfos().map((info) => ({ name: info.name, description: info.description }));

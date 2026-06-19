@@ -4,5 +4,6 @@ import './auto-vault';
 import './chat-logger';
 import './packet-logger';
 import './realm-finder';
+import './realm-host-mapper';
 
 export * from './decorators';
