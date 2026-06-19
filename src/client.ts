@@ -40,14 +40,13 @@ import {
   processObjectStatus,
   parsePlayerClass,
   hexdump,
-  ChatToken,
   PortalType,
-  TextPacket,
+  GotoPacket,
 } from 'realmlib';
 import { BUILD_VERSION, GAME_ID, GAME_PORT, HELLO_TOKEN } from './constants';
 import { config } from './config';
 import { ClientEvent } from './events';
-import { RealmPortal, ClientOptions } from './models'
+import { RealmPortal, ClientOptions } from './models';
 
 
 /**
@@ -97,6 +96,7 @@ export class Client extends EventEmitter {
   private static readonly SPEED_MIN = 0.004;
   private static readonly SPEED_MAX = 0.0096;
 
+  /** Creates a client bound to one authenticated account and starting server. */
   constructor(private readonly opts: ClientOptions) {
     super();
     this.setMaxListeners(0); // plugins may add many listeners
@@ -127,18 +127,27 @@ export class Client extends EventEmitter {
     this.target = { x: target.x, y: target.y };
   }
 
+  /** Short account label used in logs and console commands. */
   get alias(): string {
     return this.opts.alias;
   }
+
+  /** Latest parsed player stats, if the player has appeared in an update. */
   getPlayer(): PlayerData | undefined {
     return this.player;
   }
+
+  /** Current estimated player position. */
   getPosition(): { x: number; y: number } {
     return { x: this.pos.x, y: this.pos.y };
   }
+
+  /** Current in-world object id, or -1 before CreateSuccess. */
   getObjectId(): number {
     return this.objectId;
   }
+
+  /** Whether the last MapInfo identified the current map as a vault. */
   isInVault(): boolean {
     return this.inVault;
   }
@@ -196,10 +205,32 @@ export class Client extends EventEmitter {
     this.connect();
   }
 
+  /**
+   * Disconnects and reconnects to a specific Hello game id on the current or
+   * supplied server. Useful for controlled map-id probing plugins.
+   */
+  connectToGameId(gameId: number, host = this.host): void {
+    console.log(`${this.tag} connecting to gameId ${gameId} on ${host}`);
+    this.clearMapState();
+    this.clearNavState();
+    this.host = host;
+    this.gameId = gameId;
+    this.key = [];
+    this.keyTime = -1;
+    this.inVault = false;
+    this.enteringVault = false;
+    if (this.socket && !this.socket.destroyed) {
+      this.socket.destroy();
+    }
+    this.connect();
+  }
+
+  /** Log prefix for this client. */
   private get tag(): string {
     return `[${this.opts.alias}]`;
   }
 
+  /** Milliseconds since the current socket connected. */
   private time(): number {
     return Date.now() - this.connectStart;
   }
@@ -354,6 +385,7 @@ export class Client extends EventEmitter {
     }
   }
 
+  /** Opens the TCP socket, builds PacketIO, and starts the Hello handshake. */
   connect(): void {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer); // a (re)connect cancels any pending scheduled one
@@ -383,11 +415,8 @@ export class Client extends EventEmitter {
   }
 
   /**
-   * Wires up packet debugging. Unknown packet ids are always reported once.
-   * Set DEBUG_PACKETS to inspect traffic:
-   *   types   — log every incoming packet type
-   *   hex     — log every type and hexdump its payload
-   *   unknown — log + hexdump only packets with no mapped type
+   * Reports unknown packet ids once and, when DEBUG_PACKETS is set, logs raw
+   * packet traffic for protocol debugging.
    */
   private setupDebug(): void {
     this.io.on('unknownPacket', ({ id, size }: { id: number; size: number }) => {
@@ -395,7 +424,7 @@ export class Client extends EventEmitter {
         return;
       }
       this.seenUnknown.add(id);
-      console.log(`${this.tag} ⚠ unknown packet id ${id} (${size}b) — not in packet map`);
+      console.log(`${this.tag} ⚠️ unknown packet id ${id} (${size}b) — not in packet map`);
     });
 
     const mode = process.env.DEBUG_PACKETS;
@@ -419,6 +448,7 @@ export class Client extends EventEmitter {
     }
   }
 
+  /** Sends the Hello packet for the current host, game id, and reconnect key. */
   private sendHello(): void {
     const hello = new HelloPacket();
     hello.gameId = this.gameId;
@@ -434,22 +464,21 @@ export class Client extends EventEmitter {
     this.io.send(hello);
   }
 
+  /** Registers core packet handlers on the current PacketIO instance. */
   private registerHandlers(): void {
-    this.io.on(PacketType.MAPINFO, (p: MapInfoPacket) => this.handleMapInfo(p));
-    this.io.on(PacketType.CREATE_SUCCESS, (p: CreateSuccessPacket) => this.handleCreateSuccess(p));
-    this.io.on(PacketType.UPDATE, (p: UpdatePacket) => this.handleUpdate(p));
-    this.io.on(PacketType.NEWTICK, (p: NewTickPacket) => this.handleNewTick(p));
-    this.io.on(PacketType.PING, (p: PingPacket) => this.handlePing(p));
+    this.io.on(PacketType.MAPINFO, (p: MapInfoPacket)                     => this.handleMapInfo(p));
+    this.io.on(PacketType.CREATE_SUCCESS, (p: CreateSuccessPacket)        => this.handleCreateSuccess(p));
+    this.io.on(PacketType.UPDATE, (p: UpdatePacket)                       => this.handleUpdate(p));
+    this.io.on(PacketType.NEWTICK, (p: NewTickPacket)                     => this.handleNewTick(p));
+    this.io.on(PacketType.PING, (p: PingPacket)                           => this.handlePing(p));
     this.io.on(PacketType.SERVERPLAYERSHOOT, (p: ServerPlayerShootPacket) => this.handleServerPlayerShoot(p));
-    this.io.on(PacketType.ENEMYSHOOT, (p: EnemyShootPacket) => this.handleEnemyShoot(p));
-    this.io.on(PacketType.GOTO, () => this.handleGoto());
-    this.io.on(PacketType.VAULT_CONTENT, (p: VaultContentPacket) => this.handleVaultContent(p));
-    this.io.on(PacketType.QUEUE_INFORMATION, (p: QueueInfoPacket) => this.handleQueueInformation(p));
-    this.io.on(PacketType.RECONNECT, (p: ReconnectPacket) => this.handleReconnect(p));
-    this.io.on(PacketType.FAILURE, (p: FailurePacket) => this.handleFailure(p));
-    this.io.on(PacketType.TEXT, (p: TextPacket) => this.handleText(p));
-    this.io.on(PacketType.CHATTOKEN, (p: ChatToken) => this.handleChatToken(p));
-    this.io.on(PacketType.DEATH, (p: DeathPacket) => this.handleDeath(p));
+    this.io.on(PacketType.ENEMYSHOOT, (p: EnemyShootPacket)               => this.handleEnemyShoot(p));
+    this.io.on(PacketType.GOTO, (p: GotoPacket)                           => this.handleGoto(p));
+    this.io.on(PacketType.VAULT_CONTENT,  (p: VaultContentPacket)         => this.handleVaultContent(p));
+    this.io.on(PacketType.QUEUE_INFORMATION, (p: QueueInfoPacket)         => this.handleQueueInformation(p));
+    this.io.on(PacketType.RECONNECT, (p: ReconnectPacket)                 => this.handleReconnect(p));
+    this.io.on(PacketType.FAILURE, (p: FailurePacket)                     => this.handleFailure(p));
+    this.io.on(PacketType.DEATH, (p: DeathPacket)                         => this.handleDeath(p));
 
     // Re-attach plugin packet hooks: bridge every subscribed type onto this io.
     for (const type of this.subscribedPacketTypes) {
@@ -457,6 +486,7 @@ export class Client extends EventEmitter {
     }
   }
 
+  /** Handles map metadata, then creates or loads the configured character. */
   private handleMapInfo(p: MapInfoPacket): void {
     console.log(`${this.tag} ✓ MapInfo accepted: "${p.name}" (${p.width}x${p.height})`);
     this.enteringVault = false;
@@ -488,6 +518,7 @@ export class Client extends EventEmitter {
     }
   }
 
+  /** Records the assigned player object id and enables ally shot visibility. */
   private handleCreateSuccess(p: CreateSuccessPacket): void {
     this.objectId = p.objectId;
     this.lastFrameTime = this.time();
@@ -498,6 +529,7 @@ export class Client extends EventEmitter {
     this.emit(ClientEvent.Ready, p.objectId);
   }
 
+  /** Acknowledges object updates and refreshes tracked entities and portals. */
   private handleUpdate(p: UpdatePacket): void {
     this.io.send(new UpdateAckPacket());
     if (!this.posKnown && p.pos) {
@@ -529,6 +561,7 @@ export class Client extends EventEmitter {
     this.findVaultPortal();
   }
 
+  /** Drives each game tick: movement, status updates, portal use, and events. */
   private handleNewTick(p: NewTickPacket): void {
     const now = this.time();
     const dt = this.lastFrameTime > 0 ? now - this.lastFrameTime : 0;
@@ -541,6 +574,7 @@ export class Client extends EventEmitter {
     this.emit(ClientEvent.Tick, this.player);
   }
 
+  /** Advances the local position toward a requested movement target. */
   private updateTarget(dt: number): void {
     if (!this.target) {
       return;
@@ -554,6 +588,7 @@ export class Client extends EventEmitter {
     }
   }
 
+  /** Sends the MOVE packet required every tick to keep the client alive. */
   private sendMove(p: NewTickPacket, now: number): void {
     const move = new MovePacket();
     move.tickId = p.tickId;
@@ -566,6 +601,7 @@ export class Client extends EventEmitter {
     this.io.send(move);
   }
 
+  /** Applies per-object status deltas from the tick to player and portal state. */
   private updateStatuses(p: NewTickPacket): void {
     for (const status of p.statuses) {
       if (status.objectId === this.objectId) {
@@ -576,6 +612,7 @@ export class Client extends EventEmitter {
     }
   }
 
+  /** Sends USE_PORTAL once the vault target has been reached. */
   private tryUseVaultPortal(): void {
     if (
       this.vaultPortalId === undefined ||
@@ -595,6 +632,7 @@ export class Client extends EventEmitter {
     this.usePortalAttempts++;
   }
 
+  /** Emits a periodic compact heartbeat with basic character state. */
   private logAlive(p: NewTickPacket): void {
     if (++this.tickCount % 30 !== 0) {
       return;
@@ -605,6 +643,7 @@ export class Client extends EventEmitter {
     console.log(`${this.tag} alive — tick ${p.tickId}, pos (${this.pos.x.toFixed(1)}, ${this.pos.y.toFixed(1)}) ${stats}`);
   }
 
+  /** Replies to server ping with the expected serial and current client time. */
   private handlePing(p: PingPacket): void {
     const pong = new PongPacket();
     pong.serial = p.serial;
@@ -612,6 +651,7 @@ export class Client extends EventEmitter {
     this.io.send(pong);
   }
 
+  /** Acknowledges our own server-authoritative projectile events. */
   private handleServerPlayerShoot(p: ServerPlayerShootPacket): void {
     if (p.ownerId !== this.objectId) {
       return;
@@ -621,18 +661,21 @@ export class Client extends EventEmitter {
     this.io.send(ack);
   }
 
+  /** Acknowledges enemy projectile events so the server does not drop us. */
   private handleEnemyShoot(_p: EnemyShootPacket): void {
     const ack = new ShootAckPacket();
     ack.time = this.lastFrameTime;
     this.io.send(ack);
   }
 
-  private handleGoto(): void {
+  /** Acknowledges server position corrections. */
+  private handleGoto(_p: GotoPacket): void {
     const ack = new GotoAckPacket();
     ack.time = this.lastFrameTime;
     this.io.send(ack);
   }
 
+  /** Logs parsed vault storage sections and emits them for plugins. */
   private handleVaultContent(p: VaultContentPacket): void {
     this.inVault = true;
     const line = (label: string, slots: number[]): string => {
@@ -649,13 +692,15 @@ export class Client extends EventEmitter {
     this.emit(ClientEvent.VaultContents, p);
   }
 
+  /** Tracks queue state while waiting for full maps. */
   private handleQueueInformation(p: QueueInfoPacket): void {
     this.inQueue = true;
     console.log(`${this.tag} in queue — position ${p.currentPosition}/${p.maxPosition}`);
   }
 
+  /** Follows a server reconnect, preserving its destination game id and key. */
   private handleReconnect(p: ReconnectPacket): void {
-    console.log(`${this.tag} reconnect → ${p.host || this.host} (gameId ${p.gameId})`);
+    console.log(`${this.tag} reconnecting → ${p.host || this.host} (gameId ${p.gameId})`);
     this.clearMapState();
     this.clearNavState();
     this.enteringVault = true;
@@ -668,6 +713,7 @@ export class Client extends EventEmitter {
     setTimeout(() => this.connect(), 1000);
   }
 
+  /** Logs server failure packets and schedules cooldown reconnects when needed. */
   private handleFailure(p: FailurePacket): void {
     console.error(`${this.tag} FAILURE ${p.errorId} (${this.describeFailure(p)}): ${p.errorDescription}`);
     this.emit(ClientEvent.Failure, p);
@@ -678,14 +724,7 @@ export class Client extends EventEmitter {
     }
   }
 
-  private handleText(_p: TextPacket): void {
-    // Intentionally quiet; plugins such as ChatLogger can hook TEXT.
-  }
-
-  private handleChatToken(p: ChatToken): void {
-    console.log(`${this.tag} ⚠️ received ChatToken packet - token: ${p.token} - host: ${p.host} - port: ${p.port}`);
-  }
-
+  /** Emits a death event for plugins and operators. */
   private handleDeath(p: DeathPacket): void {
     console.log(`${this.tag} 💀 died`);
     this.emit(ClientEvent.Death, p);

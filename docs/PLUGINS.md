@@ -93,6 +93,7 @@ Commands:
 - `client.moveTo({ x, y })` — walk to a position (emits `ReachedTarget`)
 - `client.enterVault()` / `client.escape()` — vault / nexus
 - `client.connectToServer(host)` — switch servers
+- `client.connectToGameId(gameId, host?)` — reconnect to a specific Hello game id
 
 Queries:
 
@@ -111,6 +112,7 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
 - **Runtime console:**
   - `plugins <alias>` — list loaded plugins + all available (name + description)
   - `hosts <alias>` — print `RealmHostMapper`'s portal -> hostname table
+  - `gameids <alias>` — print `game-id-checker` probe results
   - `plugin <alias> load <name>`
   - `plugin <alias> unload <name>` — removes all its hooks cleanly
 
@@ -123,3 +125,19 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
 | `AutoVault` | `@EventHook`s driving a command (`enterVault`) |
 | `RealmFinder` | reading `realmPortals()` from an event hook; pure selection logic |
 | `RealmHostMapper` | multi-step event/packet workflow: visit portals, record Reconnect hosts, escape back |
+| `game-id-checker` | controlled live probing of known and candidate `Hello.gameId` values |
+
+### `game-id-checker`
+
+Load `"game-id-checker"` on one account to probe every known `GameId` plus the
+currently undocumented gaps between `-13` and `-1`. It records whether each id
+reaches `MapInfo` and whether it fully loads into the world with
+`CreateSuccess`.
+
+Optional environment variables:
+
+| var | meaning |
+|-----|---------|
+| `GAME_ID_CHECK_EXTRA=-50:-14,0,1` | additional ids/ranges to probe |
+| `GAME_ID_CHECK_DELAY_MS=5000` | delay between reconnect attempts |
+| `GAME_ID_CHECK_TIMEOUT_MS=20000` | per-id timeout before a probe is marked failed |

@@ -83,6 +83,9 @@ npm run build        # type-check / compile to JS
 | `DEBUG_PACKETS=types` | log every incoming packet type |
 | `DEBUG_PACKETS=hex` | log each type and hexdump its payload |
 | `DEBUG_PACKETS=unknown` | log + hexdump only unmapped packet ids |
+| `GAME_ID_CHECK_EXTRA=-20:-14,-12` | extra game ids/ranges for `game-id-checker` to probe |
+| `GAME_ID_CHECK_DELAY_MS=5000` | delay between `game-id-checker` reconnect attempts |
+| `GAME_ID_CHECK_TIMEOUT_MS=20000` | per-id timeout before `game-id-checker` marks a probe failed |
 
 Unmapped packet ids are always reported once even without `DEBUG_PACKETS`.
 
@@ -99,6 +102,7 @@ When attached to a TTY (or with `CONSOLE=1`), a stdin console is available:
 | `connect <alias> <server>` | connect a client to a server (name or host) |
 | `realms <alias>` | list the realm portals a client can see |
 | `hosts <alias>` | list RealmHostMapper portal details, including resolved hostnames |
+| `gameids <alias>` | list `game-id-checker` results |
 | `plugins <alias>` | list loaded + available plugins |
 | `plugin <alias> load\|unload <name>` | load/unload a plugin at runtime |
 
@@ -118,6 +122,7 @@ Bundled examples:
 | `AutoVault` | `@EventHook`s driving a command (`enterVault`) |
 | `RealmFinder` | reading `realmPortals()`; pure, unit-testable selection logic |
 | `RealmHostMapper` | walking each realm portal, capturing its Reconnect host, and returning to Nexus |
+| `game-id-checker` | probing known and candidate `Hello.gameId` values for valid maps |
 
 ## Status
 

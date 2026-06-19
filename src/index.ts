@@ -4,6 +4,7 @@ import { Account, AppEngineError, getCharAndServers, login, ServerInfo } from '.
 import { Client } from './client';
 import { config, setConfig } from './config';
 import { PluginManager } from './plugin-manager';
+import { GameIdChecker } from './plugins/game-id-checker';
 import { RealmHostMapper } from './plugins/realm-host-mapper';
 
 /**
@@ -16,10 +17,11 @@ import { RealmHostMapper } from './plugins/realm-host-mapper';
  *   connect <alias> <server>  — connect a client to a server (name or host)
  *   realms <alias>            — list the realm portals a client can see
  *   hosts <alias>             — list RealmHostMapper's portal -> host table
+ *   gameids <alias>           — list game-id-checker probe results
  */
 function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugins: PluginManager): void {
   console.log(
-    'console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a> | hosts <a> | plugins <a> | plugin <a> load|unload <name>',
+    'console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a> | hosts <a> | gameids <a> | plugins <a> | plugin <a> load|unload <name>',
   );
   const withClient = (alias: string, fn: (client: Client) => void): void => {
     const client = clients.get(alias);
@@ -70,6 +72,16 @@ function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugi
               return;
             }
             console.table(mapper.portals());
+          });
+          break;
+        case 'gameids':
+          withClient(args[0], (c) => {
+            const checker = plugins.get<GameIdChecker>(c, 'game-id-checker');
+            if (!checker) {
+              console.log(`[${c.alias}] game-id-checker is not loaded`);
+              return;
+            }
+            console.table(checker.checks());
           });
           break;
         case 'plugins':
