@@ -416,11 +416,16 @@ export class Client extends EventEmitter {
   private trackRealmPortal(status: ObjectStatusData): void {
     let rawName: string | undefined;
     let openedAt: number | undefined;
+    let connectId: number | undefined;
+    let connectValueTwo: number | undefined;
     for (const stat of status.stats) {
       if (stat.statType === StatType.NAME_STAT) {
         rawName = stat.stringStatValue;
       } else if (stat.statType === StatType.OPENED_AT_TIMESTAMP) {
         openedAt = stat.statValue;
+      } else if (stat.statType === StatType.CONNECT_STAT) {
+        connectId = stat.statValue;
+        connectValueTwo = stat.statValueTwo;
       }
     }
     if (rawName === undefined) {
@@ -439,11 +444,14 @@ export class Client extends EventEmitter {
       players: parsed.players,
       maxPlayers: parsed.maxPlayers,
       openedAt: openedAt ?? previous?.openedAt ?? 0,
+      connectId: connectId ?? previous?.connectId,
+      connectValueTwo: connectValueTwo ?? previous?.connectValueTwo,
     };
     this.portals.set(status.objectId, portal);
     if (!previous) {
       console.log(
-        `${this.tag} realm portal: ${parsed.name} (${parsed.players}/${parsed.maxPlayers}) opened ${openedAt ?? '?'}`,
+        `${this.tag} realm portal: ${parsed.name} (${parsed.players}/${parsed.maxPlayers}) ` +
+          `opened ${openedAt ?? '?'} connect ${connectId ?? '?'}:${connectValueTwo ?? '?'}`,
       );
     }
     this.emit(ClientEvent.RealmPortal, portal);

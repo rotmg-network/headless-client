@@ -170,13 +170,22 @@ export class AutoQuest {
     }
     this.portalUseAttempts++;
     this.lastPortalUseAt = Date.now();
+    const useId = this.portalUseId(this.targetPortal, this.portalUseAttempts);
     const pos = client.getPosition();
     console.log(
-      `[${client.alias}] AutoQuest: UsePortal(${this.targetPortal.objectId}) ` +
+      `[${client.alias}] AutoQuest: UsePortal(${useId}) ` +
         `for ${this.targetPortal.name} (attempt ${this.portalUseAttempts}, ` +
+        `objectId ${this.targetPortal.objectId}, connect ${this.targetPortal.connectId ?? '?'}:${this.targetPortal.connectValueTwo ?? '?'}, ` +
         `pos ${pos.x.toFixed(2)},${pos.y.toFixed(2)}, portal ${this.targetPortal.x.toFixed(2)},${this.targetPortal.y.toFixed(2)})`,
     );
-    client.usePortal(this.targetPortal.objectId);
+    client.usePortal(useId);
+  }
+
+  private portalUseId(portal: RealmPortal, attempt: number): number {
+    const candidates = [portal.objectId, portal.connectId, portal.connectValueTwo]
+      .filter((value): value is number => value !== undefined && Number.isInteger(value) && value > 0);
+    const unique = [...new Set(candidates)];
+    return unique[(attempt - 1) % unique.length] ?? portal.objectId;
   }
 
   private followQuest(client: Client): void {

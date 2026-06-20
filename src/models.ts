@@ -9,6 +9,10 @@ export interface RealmPortal {
   maxPlayers: number;
   /** Server timestamp at which the realm opened. */
   openedAt: number;
+  /** CONNECT_STAT primary value, when present on the portal status. */
+  connectId?: number;
+  /** CONNECT_STAT secondary value, when present on the portal status. */
+  connectValueTwo?: number;
   x: number;
   y: number;
 }
