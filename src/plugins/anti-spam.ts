@@ -9,7 +9,7 @@ const SPAM_MARKERS = [
   'r0tmgar$3nal',
   'rotmg ar$3nal',
   'r.e.a.i.m.s.h.o.p',
-  '========',
+  'rpg(put a dot)rlp'
 ];
 
 /** Blocks spam messages received in incoming TEXT packets. */
