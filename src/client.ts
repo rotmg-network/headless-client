@@ -625,7 +625,7 @@ export class Client extends EventEmitter {
     this.sendMove(p, now);
     this.updateStatuses(p);
     this.tryUseVaultPortal();
-    this.logAlive(p);
+    //this.logAlive(p);
     this.emit(ClientEvent.Tick, this.player);
   }
 
