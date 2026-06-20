@@ -18,6 +18,8 @@ const DEFAULT_SHOOT_RANGE = 6;
 const DEFAULT_SHOOT_INTERVAL_MS = 450;
 const DEFAULT_QUEST_REFRESH_MS = 1200;
 const DEFAULT_MAX_SHOTS = 3;
+const DEFAULT_PORTAL_RETRY_MS = 1200;
+const DEFAULT_PORTAL_MAX_ATTEMPTS = 6;
 
 const PLAYER_TYPES = new Set<number>(Object.values(Classes).filter((value): value is number => typeof value === 'number'));
 const PORTAL_TYPES = new Set<number>(Object.values(PortalType).filter((value): value is number => typeof value === 'number'));
@@ -38,10 +40,15 @@ export class AutoQuest {
   private questObjectId = -1;
   private lastShotAt = 0;
   private lastQuestMoveAt = 0;
+  private lastPortalUseAt = 0;
+  private portalUseAttempts = 0;
+  private readonly failedPortalIds = new Set<number>();
   private readonly shootRange = readPositiveNumber('AUTO_QUEST_SHOOT_RANGE', DEFAULT_SHOOT_RANGE);
   private readonly shootIntervalMs = readPositiveInt('AUTO_QUEST_SHOOT_INTERVAL_MS', DEFAULT_SHOOT_INTERVAL_MS);
   private readonly questRefreshMs = readPositiveInt('AUTO_QUEST_REFRESH_MS', DEFAULT_QUEST_REFRESH_MS);
   private readonly maxShots = readPositiveInt('AUTO_QUEST_MAX_SHOTS', DEFAULT_MAX_SHOTS);
+  private readonly portalRetryMs = readPositiveInt('AUTO_QUEST_PORTAL_RETRY_MS', DEFAULT_PORTAL_RETRY_MS);
+  private readonly portalMaxAttempts = readPositiveInt('AUTO_QUEST_PORTAL_MAX_ATTEMPTS', DEFAULT_PORTAL_MAX_ATTEMPTS);
 
   /** Starts by walking to the realm portal area when the client reaches Nexus. */
   @EventHook(ClientEvent.EnterNexus)
@@ -49,6 +56,9 @@ export class AutoQuest {
     if (this.state !== 'idle') {
       return;
     }
+    this.failedPortalIds.clear();
+    this.targetPortal = undefined;
+    this.portalUseAttempts = 0;
     this.state = 'walkingPortalArea';
     console.log(`[${client.alias}] AutoQuest: walking to realm portal area`);
     client.moveTo(PORTAL_AREA);
@@ -74,7 +84,9 @@ export class AutoQuest {
     }
     this.state = 'awaitingRealm';
     console.log(`[${client.alias}] AutoQuest: entering ${this.targetPortal.name}`);
-    client.usePortal(this.targetPortal.objectId);
+    this.portalUseAttempts = 0;
+    this.lastPortalUseAt = 0;
+    this.queuePortalUse(client);
   }
 
   /** Marks the realm as active after leaving Nexus. */
@@ -100,6 +112,8 @@ export class AutoQuest {
   onTick(client: Client): void {
     if (this.state === 'seekingPortal') {
       this.stepTowardPortal(client);
+    } else if (this.state === 'awaitingRealm') {
+      this.tryUsePortal(client);
     } else if (this.state === 'questing') {
       this.followQuest(client);
       this.shootNearby(client);
@@ -115,7 +129,7 @@ export class AutoQuest {
     if (this.state !== 'seekingPortal') {
       return;
     }
-    const portal = AutoQuest.pickPortal(client.realmPortals());
+    const portal = AutoQuest.pickPortal(client.realmPortals(), this.failedPortalIds);
     if (!portal) {
       return;
     }
@@ -123,6 +137,39 @@ export class AutoQuest {
     this.state = 'walkingPortal';
     console.log(`[${client.alias}] AutoQuest: walking to ${portal.name} (${portal.players}/${portal.maxPlayers})`);
     client.moveTo({ x: portal.x, y: portal.y });
+  }
+
+  private queuePortalUse(client: Client): void {
+    // ReachedTarget fires before the current tick's MOVE is sent. Defer so the
+    // server first sees the player at the portal position.
+    setTimeout(() => this.tryUsePortal(client, true), 0);
+  }
+
+  private tryUsePortal(client: Client, force = false): void {
+    if (this.state !== 'awaitingRealm' || !this.targetPortal) {
+      return;
+    }
+    if (!force && Date.now() - this.lastPortalUseAt < this.portalRetryMs) {
+      return;
+    }
+    if (this.portalUseAttempts >= this.portalMaxAttempts) {
+      console.warn(
+        `[${client.alias}] AutoQuest: ${this.targetPortal.name} did not transition after ${this.portalUseAttempts} use attempts`,
+      );
+      this.failedPortalIds.add(this.targetPortal.objectId);
+      this.targetPortal = undefined;
+      this.portalUseAttempts = 0;
+      this.state = 'seekingPortal';
+      this.stepTowardPortal(client);
+      return;
+    }
+    this.portalUseAttempts++;
+    this.lastPortalUseAt = Date.now();
+    console.log(
+      `[${client.alias}] AutoQuest: UsePortal(${this.targetPortal.objectId}) ` +
+        `for ${this.targetPortal.name} (attempt ${this.portalUseAttempts})`,
+    );
+    client.usePortal(this.targetPortal.objectId);
   }
 
   private followQuest(client: Client): void {
@@ -169,9 +216,9 @@ export class AutoQuest {
   }
 
   /** Selects the least-populated open realm portal. */
-  static pickPortal(portals: RealmPortal[]): RealmPortal | undefined {
+  static pickPortal(portals: RealmPortal[], ignored = new Set<number>()): RealmPortal | undefined {
     return portals
-      .filter((portal) => portal.players < portal.maxPlayers)
+      .filter((portal) => portal.players < portal.maxPlayers && !ignored.has(portal.objectId))
       .sort((a, b) => a.players - b.players || a.openedAt - b.openedAt)[0];
   }
 }

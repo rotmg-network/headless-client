@@ -202,6 +202,8 @@ Optional environment variables:
 | `AUTO_QUEST_SHOOT_INTERVAL_MS=450` | delay between shooting bursts |
 | `AUTO_QUEST_MAX_SHOTS=3` | max nearby targets aimed at per burst |
 | `AUTO_QUEST_REFRESH_MS=1200` | delay between quest movement target refreshes |
+| `AUTO_QUEST_PORTAL_RETRY_MS=1200` | delay between repeated `USE_PORTAL` attempts |
+| `AUTO_QUEST_PORTAL_MAX_ATTEMPTS=6` | attempts before abandoning that portal and trying another |
 
 Current limitation: enemy detection is packet-state based until object metadata
 is loaded into the client. The plugin filters out known player classes and
