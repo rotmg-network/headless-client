@@ -33,7 +33,7 @@ const DEFAULT_TIMEOUT_MS = 20000;
  * produce MapInfo and which fully load into the world.
  */
 @Plugin({
-  name: 'game-id-checker',
+  name: 'GameIdChecker',
   description: 'Tests known and candidate Hello game ids for valid map connections.',
   author: 'realmlib',
   version: '1.0.0',
