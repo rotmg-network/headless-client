@@ -36,8 +36,8 @@ const DEFAULT_MOVE_SETTLE_MS = 2500;
 const DEFAULT_PORTAL_TIMEOUT_MS = 30000;
 
 /**
- * Test-server-only sync diagnostic for checking whether inventory/backpack
- * state persists correctly across Bazaar transitions and server changes.
+ * Sync diagnostic for checking whether inventory/backpack state
+ * persists correctly across Bazaar transitions and server changes.
  */
 @Plugin({
   name: 'ChestReplication',
@@ -57,7 +57,7 @@ export class ChestReplication {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private portalStartedAt = 0;
 
-  /** Starts the diagnostic after the client loads into a Nexus on an allowlisted host. */
+  /** Starts the diagnostic after the client loads into Nexus. */
   @EventHook(ClientEvent.EnterNexus)
   onEnterNexus(client: Client): void {
     this.currentMap = 'Nexus';
@@ -69,6 +69,7 @@ export class ChestReplication {
     }
     if (this.state === 'switchingServer') {
       this.state = 'checkingSecondNexus';
+      console.log(`[${client.alias}] ChestReplication: switched to ${client.getServerHost()}`);
       this.scheduleInventoryCheck(client, 'secondNexus');
     }
   }
@@ -196,7 +197,7 @@ export class ChestReplication {
     if (stage === 'firstBazaar') {
       const next = this.pickNextServer(client);
       if (!next) {
-        this.stop(client, 'no different allowlisted test server is available');
+        console.log(`[${client.alias}] ChestReplication: failed to find server: ${next}`);
         return;
       }
       this.state = 'switchingServer';
