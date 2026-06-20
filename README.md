@@ -49,7 +49,7 @@ An array of account objects:
     "password": "hunter2",
     "alias": "main",
     "enterVault": false,
-    "plugins": ["ChatLogger", "RealmFinder"]
+    "plugins": ["ChatLogger", "RealmFinder", "PacketLogger"]
   }
 ]
 ```
@@ -125,7 +125,7 @@ Bundled examples:
 | `AutoVault` | `@EventHook`s driving a command (`enterVault`) |
 | `RealmFinder` | reading `realmPortals()`; pure, unit-testable selection logic |
 | `RealmHostMapper` | walking each realm portal, capturing its Reconnect host, and returning to Nexus |
-| `game-id-checker` | probing known and candidate `Hello.gameId` values for valid maps |
+| `GameIdChecker` | probing known and candidate `Hello.gameId` values for valid maps |
 | `ChestReplication` | test-server inventory/backpack sync verification across Bazaar and server transitions |
 
 ## Status
@@ -147,7 +147,7 @@ This project would not exist without these reference implementations:
   account handling, and proxy support.
 - **[RealmShark](https://github.com/X-com/RealmShark)** — a Java pcap sniffer,
   used to cross-check current packet structures and data types.
-- **[realmlib](../realmlib)** — the wire-protocol library this client is built
+- **[realmlib](https://github.com/rotmg-network/realmlib)** — the wire-protocol library this client is built
   on (originally derived from the realmlib/nrelay lineage, hardened and
   reconciled here).
 
