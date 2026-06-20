@@ -41,7 +41,7 @@ const DEFAULT_PORTAL_TIMEOUT_MS = 30000;
  */
 @Plugin({
   name: 'ChestReplication',
-  description: 'Test-server-only inventory/backpack persistence check across Bazaar and server transitions.',
+  description: 'Inventory/pet backpack persistence check across Bazaar and server transitions.',
   author: 'realmlib',
   version: '1.0.0',
 })
@@ -50,7 +50,6 @@ export class ChestReplication {
   private currentMap = '';
   private targetPortal: TrackedObject | undefined;
   private baselineItems: number[] = [];
-  private readonly allowedHosts = parseList(process.env.CHEST_REPLICATION_TEST_HOSTS);
   private readonly preferredPortal = (process.env.CHEST_REPLICATION_BAZAAR ?? 'any').toLowerCase();
   private readonly checkDelayMs = readPositiveInt('CHEST_REPLICATION_CHECK_DELAY_MS', DEFAULT_CHECK_DELAY_MS);
   private readonly moveSettleMs = readPositiveInt('CHEST_REPLICATION_MOVE_SETTLE_MS', DEFAULT_MOVE_SETTLE_MS);
@@ -63,20 +62,12 @@ export class ChestReplication {
   onEnterNexus(client: Client): void {
     this.currentMap = 'Nexus';
     if (this.state === 'idle') {
-      if (!this.assertTestHost(client)) {
-        this.stop(client, 'current host is not in CHEST_REPLICATION_TEST_HOSTS');
-        return;
-      }
       this.state = 'findingFirstBazaar';
       console.log(`[${client.alias}] ChestReplication: starting on ${client.getServerHost()}`);
       this.step(client);
       return;
     }
     if (this.state === 'switchingServer') {
-      if (!this.assertTestHost(client)) {
-        this.stop(client, 'switched host is not in CHEST_REPLICATION_TEST_HOSTS');
-        return;
-      }
       this.state = 'checkingSecondNexus';
       this.scheduleInventoryCheck(client, 'secondNexus');
     }
@@ -289,21 +280,13 @@ export class ChestReplication {
 
   private pickNextServer(client: Client): { name: string; address: string } | undefined {
     const explicit = process.env.CHEST_REPLICATION_NEXT_SERVER;
-    const servers = client.knownServers().filter((server) => this.isAllowedHost(server.address));
+    const servers = client.knownServers();
     if (explicit) {
       return servers.find(
         (server) => server.address === explicit || server.name.toLowerCase() === explicit.toLowerCase(),
       );
     }
     return servers.find((server) => server.address !== client.getServerHost());
-  }
-
-  private assertTestHost(client: Client): boolean {
-    return this.allowedHosts.length > 0 && this.isAllowedHost(client.getServerHost());
-  }
-
-  private isAllowedHost(host: string): boolean {
-    return this.allowedHosts.includes(host.toLowerCase());
   }
 
   private captureBaseline(sourceItems: number[]): void {
