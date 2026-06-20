@@ -13,7 +13,11 @@ export class ChatLogger {
   @PacketHook()
   onText(client: Client, text: TextPacket): void {
     if (text.text) {
-      console.log(`[${client.alias}] [⭐️ ${text.numStars}] <${text.name}> ${text.text}`);
+      const isPlayerMessage = text.numStars != 65535;
+      if (isPlayerMessage) {
+        console.log(`[${client.alias}] ⭐️ ${text.numStars} <${text.name}> ${text.text}`);
+      }
+      console.log(`[${client.alias}] ${text.name} ${text.text}`);
     }
   }
 }
