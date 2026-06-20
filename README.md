@@ -86,6 +86,9 @@ npm run build        # type-check / compile to JS
 | `GAME_ID_CHECK_EXTRA=-20:-14,-12` | extra game ids/ranges for `game-id-checker` to probe |
 | `GAME_ID_CHECK_DELAY_MS=5000` | delay between `game-id-checker` reconnect attempts |
 | `GAME_ID_CHECK_TIMEOUT_MS=20000` | per-id timeout before `game-id-checker` marks a probe failed |
+| `CHEST_REPLICATION_TEST_HOSTS=host1,host2` | required allowlist for `ChestReplication` test-server runs |
+| `CHEST_REPLICATION_NEXT_SERVER=host2` | optional explicit second test server for `ChestReplication` |
+| `CHEST_REPLICATION_BAZAAR=LeftBazaar` | preferred Bazaar portal (`LeftBazaar`, `RightBazaar`, or `any`) |
 
 Unmapped packet ids are always reported once even without `DEBUG_PACKETS`.
 
@@ -123,6 +126,7 @@ Bundled examples:
 | `RealmFinder` | reading `realmPortals()`; pure, unit-testable selection logic |
 | `RealmHostMapper` | walking each realm portal, capturing its Reconnect host, and returning to Nexus |
 | `game-id-checker` | probing known and candidate `Hello.gameId` values for valid maps |
+| `ChestReplication` | test-server inventory/backpack sync verification across Bazaar and server transitions |
 
 ## Status
 

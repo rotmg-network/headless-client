@@ -94,12 +94,16 @@ Commands:
 - `client.enterVault()` / `client.escape()` — vault / nexus
 - `client.connectToServer(host)` — switch servers
 - `client.connectToGameId(gameId, host?)` — reconnect to a specific Hello game id
+- `client.usePortal(objectId)` — use a tracked portal object
+- `client.swapInventorySlots(fromSlotId, toSlotId)` — send `INVSWAP` for player slots
 
 Queries:
 
 - `client.alias`
 - `client.getPlayer()` — parsed `PlayerData`
 - `client.getPosition()` / `client.getObjectId()` / `client.isInVault()`
+- `client.getServerHost()` / `client.knownServers()` / `client.differentServer()`
+- `client.visibleObjects()` — tracked non-player objects from updates
 - `client.realmPortals()` — tracked realm portals
 
 You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
@@ -126,6 +130,7 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
 | `RealmFinder` | reading `realmPortals()` from an event hook; pure selection logic |
 | `RealmHostMapper` | multi-step event/packet workflow: visit portals, record Reconnect hosts, escape back |
 | `game-id-checker` | controlled live probing of known and candidate `Hello.gameId` values |
+| `ChestReplication` | test-server inventory/backpack sync diagnostic across Bazaar/server transitions |
 
 ### `game-id-checker`
 
@@ -141,3 +146,28 @@ Optional environment variables:
 | `GAME_ID_CHECK_EXTRA=-50:-14,0,1` | additional ids/ranges to probe |
 | `GAME_ID_CHECK_DELAY_MS=5000` | delay between reconnect attempts |
 | `GAME_ID_CHECK_TIMEOUT_MS=20000` | per-id timeout before a probe is marked failed |
+
+### `ChestReplication`
+
+`ChestReplication` is intentionally gated for test infrastructure. It refuses to
+run unless the current server host appears in `CHEST_REPLICATION_TEST_HOSTS`.
+The workflow enters a Bazaar portal, checks regular inventory slots `4-11` and
+backpack slots `12-19`, moves backpack items into empty inventory slots when
+regular inventory is empty, switches to a different allowlisted server, repeats
+the check, then enters Bazaar again and reports whether tracked items are present
+in both containers.
+
+Required:
+
+| var | meaning |
+|-----|---------|
+| `CHEST_REPLICATION_TEST_HOSTS=host1,host2` | comma-separated test-server allowlist |
+
+Optional:
+
+| var | meaning |
+|-----|---------|
+| `CHEST_REPLICATION_NEXT_SERVER=host2` | explicit second test server by host or server name |
+| `CHEST_REPLICATION_BAZAAR=LeftBazaar` | preferred portal; use `RightBazaar` or `any` as needed |
+| `CHEST_REPLICATION_CHECK_DELAY_MS=5000` | delay before each inventory/backpack snapshot |
+| `CHEST_REPLICATION_MOVE_SETTLE_MS=2500` | delay after `INVSWAP`s before continuing |

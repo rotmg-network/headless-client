@@ -158,6 +158,7 @@ async function main(): Promise<void> {
         charId: char.charId,
         needsNewChar: char.needsNewChar,
         host: server.address,
+        servers,
         autoEnterVault: acc.enterVault,
       });
       clients.set(alias, client);

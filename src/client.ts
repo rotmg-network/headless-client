@@ -26,8 +26,10 @@ import {
   QueueInfoPacket,
   ShowAllyShootPacket,
   UsePortalPacket,
+  InvSwapPacket,
   VaultContentPacket,
   EscapePacket,
+  SlotObjectData,
   ObjectData,
   ObjectStatusData,
   StatType,
@@ -46,7 +48,7 @@ import {
 import { BUILD_VERSION, GAME_ID, GAME_PORT, HELLO_TOKEN } from './constants';
 import { config } from './config';
 import { ClientEvent } from './events';
-import { RealmPortal, ClientOptions } from './models';
+import { RealmPortal, ClientOptions, ClientServer, TrackedObject } from './models';
 
 
 /**
@@ -81,7 +83,7 @@ export class Client extends EventEmitter {
 
   // Navigation / vault state
   private wantVault = false;
-  private readonly objects = new Map<number, { type: number; x: number; y: number; name?: string }>();
+  private readonly objects = new Map<number, TrackedObject>();
   private readonly portals = new Map<number, RealmPortal>();
   private vaultPortalId: number | undefined;
   private target: { x: number; y: number } | undefined;
@@ -157,7 +159,59 @@ export class Client extends EventEmitter {
     return [...this.portals.values()];
   }
 
+  /** Visible non-player objects currently tracked from UPDATE/NEWTICK state. */
+  visibleObjects(): TrackedObject[] {
+    return [...this.objects.values()];
+  }
+
+  /** Hostname/address of the server this client is currently connected to. */
+  getServerHost(): string {
+    return this.host;
+  }
+
+  /** Server list returned by /char/list when this client was created. */
+  knownServers(): ClientServer[] {
+    return [...(this.opts.servers ?? [])];
+  }
+
+  /** First known server whose address differs from the current host. */
+  differentServer(): ClientServer | undefined {
+    return this.knownServers().find((server) => server.address !== this.host);
+  }
+
+  /** Sends USE_PORTAL for a visible portal object id. */
+  usePortal(objectId: number): void {
+    const use = new UsePortalPacket();
+    use.objectId = objectId;
+    this.io.send(use);
+  }
+
+  /** Sends INVSWAP between two player inventory/backpack slots. */
+  swapInventorySlots(fromSlotId: number, toSlotId: number): boolean {
+    if (!this.player || this.objectId === -1) {
+      return false;
+    }
+    const packet = new InvSwapPacket();
+    packet.time = this.time();
+    packet.position.x = this.pos.x;
+    packet.position.y = this.pos.y;
+    packet.slotObject1 = this.slotObject(fromSlotId);
+    packet.slotObject2 = this.slotObject(toSlotId);
+    this.io.send(packet);
+    return true;
+  }
+
   //#endregion
+
+  /** Builds SlotObjectData for the current player and item in `slotId`. */
+  private slotObject(slotId: number): SlotObjectData {
+    const slot = new SlotObjectData();
+    slot.objectId = this.objectId;
+    slot.slotId = slotId;
+    const item = this.player?.inventory?.[slotId] ?? -1;
+    slot.objectType = item === -1 ? 0xffffffff : item;
+    return slot;
+  }
 
   /** Bridges an io packet emission onto this client's emitter (for the current io). */
   private bridgePacket(type: PacketType): void {
@@ -543,6 +597,7 @@ export class Client extends EventEmitter {
         this.player = processObject(obj);
       } else {
         this.objects.set(obj.status.objectId, {
+          objectId: obj.status.objectId,
           type: obj.objectType,
           x: obj.status.pos.x,
           y: obj.status.pos.y,

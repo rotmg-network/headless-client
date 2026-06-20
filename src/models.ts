@@ -13,6 +13,21 @@ export interface RealmPortal {
   y: number;
 }
 
+/** A visible object tracked from UPDATE/NEWTICK state. */
+export interface TrackedObject {
+  objectId: number;
+  type: number;
+  x: number;
+  y: number;
+  name?: string;
+}
+
+/** Game server metadata from /char/list. */
+export interface ClientServer {
+  name: string;
+  address: string;
+}
+
 /** Configuration for each Client. */
 export interface ClientOptions {
   alias: string;
@@ -21,6 +36,8 @@ export interface ClientOptions {
   charId: number;
   needsNewChar: boolean;
   host: string;
+  /** Full server list known when the client was created. */
+  servers?: ClientServer[];
   /** Walk into the vault automatically once in the nexus. */
   autoEnterVault?: boolean;
 }
