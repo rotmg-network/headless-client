@@ -16,8 +16,9 @@ export class ChatLogger {
       const isPlayerMessage = text.numStars != 65535;
       if (isPlayerMessage) {
         console.log(`[${client.alias}] ⭐️ ${text.numStars} <${text.name}> ${text.text}`);
+      } else {
+        console.log(`[${client.alias}] ${text.name} ${text.text}`);
       }
-      console.log(`[${client.alias}] ${text.name} ${text.text}`);
     }
   }
 }
