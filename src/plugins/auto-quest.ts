@@ -4,8 +4,16 @@ import { ClientEvent } from '../events';
 import { RealmPortal, TrackedObject } from '../models';
 import { EventHook, PacketHook, Plugin } from './decorators';
 
-type AutoQuestState = 'idle' | 'seekingPortal' | 'walkingPortal' | 'awaitingRealm' | 'questing' | 'stopped';
+type AutoQuestState =
+  | 'idle'
+  | 'walkingPortalArea'
+  | 'seekingPortal'
+  | 'walkingPortal'
+  | 'awaitingRealm'
+  | 'questing'
+  | 'stopped';
 
+const PORTAL_AREA = { x: 130, y: 110 };
 const DEFAULT_SHOOT_RANGE = 6;
 const DEFAULT_SHOOT_INTERVAL_MS = 450;
 const DEFAULT_QUEST_REFRESH_MS = 1200;
@@ -41,9 +49,9 @@ export class AutoQuest {
     if (this.state !== 'idle') {
       return;
     }
-    this.state = 'seekingPortal';
-    console.log(`[${client.alias}] AutoQuest: looking for an open realm portal`);
-    this.stepTowardPortal(client);
+    this.state = 'walkingPortalArea';
+    console.log(`[${client.alias}] AutoQuest: walking to realm portal area`);
+    client.moveTo(PORTAL_AREA);
   }
 
   /** Re-evaluates visible realm portals as Nexus portal stats update. */
@@ -54,7 +62,13 @@ export class AutoQuest {
 
   /** Enters the selected realm portal once movement reaches it. */
   @EventHook(ClientEvent.ReachedTarget)
-  onReachedTarget(client: Client): void {
+  onReachedTarget(client: Client, target: { x: number; y: number }): void {
+    if (this.state === 'walkingPortalArea' && distance(target, PORTAL_AREA) <= 0.1) {
+      this.state = 'seekingPortal';
+      console.log(`[${client.alias}] AutoQuest: looking for an open realm portal`);
+      this.stepTowardPortal(client);
+      return;
+    }
     if (this.state !== 'walkingPortal' || !this.targetPortal) {
       return;
     }
