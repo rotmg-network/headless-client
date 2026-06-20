@@ -5,3 +5,4 @@ accounts.json
 *.log
 *.tsbuildinfo
 notes.md
+.DS_Store
