@@ -204,6 +204,7 @@ Optional environment variables:
 | `AUTO_QUEST_REFRESH_MS=1200` | delay between quest movement target refreshes |
 | `AUTO_QUEST_PORTAL_RETRY_MS=1200` | delay between repeated `USE_PORTAL` attempts |
 | `AUTO_QUEST_PORTAL_MAX_ATTEMPTS=6` | attempts before abandoning that portal and trying another |
+| `AUTO_QUEST_PORTAL_ARRIVE_THRESHOLD=0.05` | distance considered close enough before using a realm portal |
 
 Current limitation: enemy detection is packet-state based until object metadata
 is loaded into the client. The plugin filters out known player classes and

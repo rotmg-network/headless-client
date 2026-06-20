@@ -20,6 +20,7 @@ const DEFAULT_QUEST_REFRESH_MS = 1200;
 const DEFAULT_MAX_SHOTS = 3;
 const DEFAULT_PORTAL_RETRY_MS = 1200;
 const DEFAULT_PORTAL_MAX_ATTEMPTS = 6;
+const DEFAULT_PORTAL_ARRIVE_THRESHOLD = 0.05;
 
 const PLAYER_TYPES = new Set<number>(Object.values(Classes).filter((value): value is number => typeof value === 'number'));
 const PORTAL_TYPES = new Set<number>(Object.values(PortalType).filter((value): value is number => typeof value === 'number'));
@@ -49,6 +50,10 @@ export class AutoQuest {
   private readonly maxShots = readPositiveInt('AUTO_QUEST_MAX_SHOTS', DEFAULT_MAX_SHOTS);
   private readonly portalRetryMs = readPositiveInt('AUTO_QUEST_PORTAL_RETRY_MS', DEFAULT_PORTAL_RETRY_MS);
   private readonly portalMaxAttempts = readPositiveInt('AUTO_QUEST_PORTAL_MAX_ATTEMPTS', DEFAULT_PORTAL_MAX_ATTEMPTS);
+  private readonly portalArriveThreshold = readPositiveNumber(
+    'AUTO_QUEST_PORTAL_ARRIVE_THRESHOLD',
+    DEFAULT_PORTAL_ARRIVE_THRESHOLD,
+  );
 
   /** Starts by walking to the realm portal area when the client reaches Nexus. */
   @EventHook(ClientEvent.EnterNexus)
@@ -136,7 +141,7 @@ export class AutoQuest {
     this.targetPortal = portal;
     this.state = 'walkingPortal';
     console.log(`[${client.alias}] AutoQuest: walking to ${portal.name} (${portal.players}/${portal.maxPlayers})`);
-    client.moveTo({ x: portal.x, y: portal.y });
+    client.moveTo({ x: portal.x, y: portal.y }, this.portalArriveThreshold);
   }
 
   private queuePortalUse(client: Client): void {
@@ -165,9 +170,11 @@ export class AutoQuest {
     }
     this.portalUseAttempts++;
     this.lastPortalUseAt = Date.now();
+    const pos = client.getPosition();
     console.log(
       `[${client.alias}] AutoQuest: UsePortal(${this.targetPortal.objectId}) ` +
-        `for ${this.targetPortal.name} (attempt ${this.portalUseAttempts})`,
+        `for ${this.targetPortal.name} (attempt ${this.portalUseAttempts}, ` +
+        `pos ${pos.x.toFixed(2)},${pos.y.toFixed(2)}, portal ${this.targetPortal.x.toFixed(2)},${this.targetPortal.y.toFixed(2)})`,
     );
     client.usePortal(this.targetPortal.objectId);
   }

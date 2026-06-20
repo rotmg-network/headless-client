@@ -109,7 +109,7 @@ export class Client extends EventEmitter {
   private readonly objects = new Map<number, TrackedObject>();
   private readonly portals = new Map<number, RealmPortal>();
   private vaultPortalId: number | undefined;
-  private target: { x: number; y: number } | undefined;
+  private target: { x: number; y: number; threshold: number } | undefined;
   private enteringVault = false;
   private inVault = false;
   private dumped = false;
@@ -176,8 +176,8 @@ export class Client extends EventEmitter {
   }
 
   /** Walks the player toward a position (cleared on arrival, emits 'reachedTarget'). */
-  moveTo(target: { x: number; y: number }): void {
-    this.target = { x: target.x, y: target.y };
+  moveTo(target: { x: number; y: number }, arriveThreshold = config.arriveThreshold): void {
+    this.target = { x: target.x, y: target.y, threshold: arriveThreshold };
   }
 
   /** Short account label used in logs and console commands. */
@@ -513,7 +513,7 @@ export class Client extends EventEmitter {
     for (const [id, o] of this.objects) {
       if (o.type == PortalType.Vault) {
         this.vaultPortalId = id;
-        this.target = { x: o.x, y: o.y };
+        this.target = { x: o.x, y: o.y, threshold: config.arriveThreshold };
         console.log(
           `${this.tag} found vault portal "${o.name}" (id ${id}, type ${o.type}) at (${o.x.toFixed(1)}, ${o.y.toFixed(1)}) → navigating`,
         );
@@ -732,9 +732,9 @@ export class Client extends EventEmitter {
       return;
     }
     this.stepToward(this.target, dt);
-    if (Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y) < config.arriveThreshold) {
+    if (Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y) < this.target.threshold) {
       console.log(`${this.tag} reached move target`);
-      const reached = this.target;
+      const reached = { x: this.target.x, y: this.target.y };
       this.target = undefined;
       this.emit(ClientEvent.ReachedTarget, reached);
     }
