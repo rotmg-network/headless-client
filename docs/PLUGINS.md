@@ -50,15 +50,27 @@ Class decorator. Registers the plugin under `name` and attaches its metadata.
 ### `@PacketHook()`
 Method decorator for an incoming packet. The packet type is **inferred from the
 method's second parameter type** — no need to name it. The method signature is
-always `(client: Client, packet: SomePacket)`:
+usually `(client: Client, packet: SomePacket)`. A hook can also accept a third
+`PacketContext` argument and call `ctx.cancel()` to stop lower-priority hooks
+for that packet:
 
 ```ts
 @PacketHook()
 onUpdate(client: Client, update: UpdatePacket): void { ... }   // hooks UPDATE
+
+@PacketHook({ priority: 100 })
+onText(client: Client, text: TextPacket, ctx: PacketContext): void {
+  if (isSpam(text.text)) {
+    ctx.cancel('spam');
+  }
+}
 ```
 
 Subscribing is what makes realmlib start parsing that packet type for the
-client, and the hook survives reconnects automatically.
+client, and the hook survives reconnects automatically. Higher priority hooks
+run first; hooks with the same priority run in load order. Cancelling a packet
+only stops later plugin hooks for that packet type; it does not undo network
+receipt or skip the client's required protocol acknowledgements.
 
 ### `@EventHook(ClientEvent.X)`
 Method decorator for a higher-level game event. The method receives the client
@@ -125,6 +137,7 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
 | plugin | shows |
 |--------|-------|
 | `ChatLogger` | a single `@PacketHook` (TEXT) |
+| `AntiSpam` | high-priority cancellable `@PacketHook` before chat logging |
 | `PacketLogger` | several `@PacketHook`s + an `@EventHook` (Death) |
 | `AutoVault` | `@EventHook`s driving a command (`enterVault`) |
 | `RealmFinder` | reading `realmPortals()` from an event hook; pure selection logic |

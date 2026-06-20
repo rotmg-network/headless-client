@@ -1,10 +1,11 @@
-import { Packet } from 'realmlib';
-import { Client } from './client';
+import { Packet, PacketType } from 'realmlib';
+import { Client, PacketContext } from './client';
 import { allPluginInfos, getEventHooks, getPacketHooks, getPluginClass } from './plugins';
 
 interface Binding {
   event: string;
   fn: (...args: unknown[]) => void;
+  kind: 'event' | 'packet';
 }
 
 interface Loaded {
@@ -41,14 +42,14 @@ export class PluginManager {
     const bindings: Binding[] = [];
 
     for (const hook of getPacketHooks(cls)) {
-      const fn = (packet: Packet): void => instance[hook.method](client, packet);
-      client.onPacket(hook.packetType, fn);
-      bindings.push({ event: hook.packetType, fn: fn as (...args: unknown[]) => void });
+      const fn = (packet: Packet, ctx: PacketContext): void => instance[hook.method](client, packet, ctx);
+      client.onPacket(hook.packetType, fn, { priority: hook.priority });
+      bindings.push({ kind: 'packet', event: hook.packetType, fn: fn as (...args: unknown[]) => void });
     }
     for (const hook of getEventHooks(cls)) {
       const fn = (...args: unknown[]): void => instance[hook.method](client, ...args);
       client.on(hook.event, fn);
-      bindings.push({ event: hook.event, fn });
+      bindings.push({ kind: 'event', event: hook.event, fn });
     }
 
     clientPlugins.set(name, { instance, bindings });
@@ -63,7 +64,11 @@ export class PluginManager {
       return false;
     }
     for (const binding of loaded.bindings) {
-      client.off(binding.event, binding.fn);
+      if (binding.kind === 'packet') {
+        client.offPacket(binding.event as PacketType, binding.fn as (packet: Packet, ctx: PacketContext) => void);
+      } else {
+        client.off(binding.event, binding.fn);
+      }
     }
     this.byClient.get(client)?.delete(name);
     console.log(`[${client.alias}] plugin unloaded: ${name}`);

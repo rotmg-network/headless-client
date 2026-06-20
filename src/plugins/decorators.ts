@@ -22,6 +22,7 @@ export type PluginClass = new () => object;
 interface PacketHookDef {
   method: string;
   packetType: PacketType;
+  priority: number;
 }
 interface EventHookDef {
   method: string;
@@ -51,11 +52,19 @@ export function Plugin(info: PluginInfo): ClassDecorator {
 }
 
 /**
+ * Options for packet hooks. Higher priority hooks run first; a hook can cancel
+ * the packet context to stop lower-priority hooks from seeing it.
+ */
+export interface PacketHookOptions {
+  priority?: number;
+}
+
+/**
  * Hooks an incoming packet. The packet type is inferred from the method's
  * second parameter type — e.g. `onText(client: Client, text: TextPacket)`
  * hooks PacketType.TEXT. Subscribing makes realmlib parse that type.
  */
-export function PacketHook(): MethodDecorator {
+export function PacketHook(options: PacketHookOptions = {}): MethodDecorator {
   return (target, propertyKey) => {
     const params: unknown[] = Reflect.getMetadata('design:paramtypes', target, propertyKey) ?? [];
     const packetClass = params[1] as (new () => Packet) | undefined;
@@ -70,7 +79,11 @@ export function PacketHook(): MethodDecorator {
       console.warn(`@PacketHook: could not resolve a packet type for ${String(propertyKey)}`);
       return;
     }
-    push(packetHooks, (target as object).constructor as PluginClass, { method: propertyKey as string, packetType });
+    push(packetHooks, (target as object).constructor as PluginClass, {
+      method: propertyKey as string,
+      packetType,
+      priority: options.priority ?? 0,
+    });
   };
 }
 

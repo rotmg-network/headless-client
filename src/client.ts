@@ -50,6 +50,25 @@ import { config } from './config';
 import { ClientEvent } from './events';
 import { RealmPortal, ClientOptions, ClientServer, TrackedObject } from './models';
 
+/** Context passed to packet hooks so one plugin can stop later hooks. */
+export interface PacketContext {
+  readonly type: PacketType;
+  readonly packet: Packet;
+  readonly cancelled: boolean;
+  cancel(reason?: string): void;
+  cancelReason?: string;
+}
+
+interface MutablePacketContext extends PacketContext {
+  cancelled: boolean;
+  cancelReason?: string;
+}
+
+interface PacketHandlerEntry {
+  handler: (packet: Packet, ctx: PacketContext) => void;
+  priority: number;
+  order: number;
+}
 
 /**
  * A headless client for one account. Logs in, runs the keep-alive loop, and
@@ -62,6 +81,8 @@ export class Client extends EventEmitter {
 
   /** Packet types any plugin has hooked; bridged onto each fresh io. */
   private readonly subscribedPacketTypes = new Set<PacketType>();
+  private readonly packetHandlers = new Map<PacketType, PacketHandlerEntry[]>();
+  private packetHandlerOrder = 0;
 
   // Current server / map state
   private host: string;
@@ -108,15 +129,43 @@ export class Client extends EventEmitter {
 
   //#region plugin-facing surface
 
-  /** Hooks an incoming packet type. realmlib starts parsing the type on demand. */
-  onPacket<T extends Packet>(type: PacketType, handler: (packet: T) => void): this {
+  /**
+   * Hooks an incoming packet type. Higher priority handlers run first and can
+   * cancel later packet hooks through PacketContext.
+   */
+  onPacket<T extends Packet>(
+    type: PacketType,
+    handler: (packet: T, ctx: PacketContext) => void,
+    options: { priority?: number } = {},
+  ): this {
     if (!this.subscribedPacketTypes.has(type)) {
       this.subscribedPacketTypes.add(type);
       // Bridge io -> this for the type if already connected; otherwise
       // registerHandlers() will bridge it on (re)connect.
       this.bridgePacket(type);
     }
-    return this.on(type, handler as (packet: Packet) => void);
+    const handlers = this.packetHandlers.get(type) ?? [];
+    handlers.push({
+      handler: handler as (packet: Packet, ctx: PacketContext) => void,
+      priority: options.priority ?? 0,
+      order: this.packetHandlerOrder++,
+    });
+    handlers.sort((a, b) => b.priority - a.priority || a.order - b.order);
+    this.packetHandlers.set(type, handlers);
+    return this;
+  }
+
+  /** Removes a packet hook registered with onPacket. */
+  offPacket<T extends Packet>(type: PacketType, handler: (packet: T, ctx: PacketContext) => void): this {
+    const handlers = this.packetHandlers.get(type);
+    if (!handlers) {
+      return this;
+    }
+    this.packetHandlers.set(
+      type,
+      handlers.filter((entry) => entry.handler !== handler),
+    );
+    return this;
   }
 
   /** Sends a packet to the server. */
@@ -215,7 +264,28 @@ export class Client extends EventEmitter {
 
   /** Bridges an io packet emission onto this client's emitter (for the current io). */
   private bridgePacket(type: PacketType): void {
-    this.io?.on(type, (packet: Packet) => this.emit(type, packet));
+    this.io?.on(type, (packet: Packet) => this.dispatchPacket(type, packet));
+  }
+
+  /** Runs plugin packet hooks in priority order until one cancels the packet. */
+  private dispatchPacket(type: PacketType, packet: Packet): void {
+    const handlers = this.packetHandlers.get(type) ?? [];
+    const ctx: MutablePacketContext = {
+      type,
+      packet,
+      cancelled: false,
+      cancel: () => undefined,
+    };
+    ctx.cancel = (reason?: string): void => {
+      ctx.cancelled = true;
+      ctx.cancelReason = reason;
+    };
+    for (const entry of handlers) {
+      entry.handler(packet, ctx);
+      if (ctx.cancelled) {
+        return;
+      }
+    }
   }
 
   /**
