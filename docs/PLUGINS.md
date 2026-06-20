@@ -108,6 +108,7 @@ Commands:
 - `client.connectToGameId(gameId, host?)` — reconnect to a specific Hello game id
 - `client.usePortal(objectId)` — use a tracked portal object
 - `client.swapInventorySlots(fromSlotId, toSlotId)` — send `INVSWAP` for player slots
+- `client.shootAt({ x, y })` — aim and send `PLAYERSHOOT` at a world position
 
 Queries:
 
@@ -138,6 +139,7 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
 |--------|-------|
 | `ChatLogger` | a single `@PacketHook` (TEXT) |
 | `AntiSpam` | high-priority cancellable `@PacketHook` before chat logging |
+| `AutoQuest` | realm entry, `QUESTOBJID` tracking, movement, and basic auto-shooting |
 | `PacketLogger` | several `@PacketHook`s + an `@EventHook` (Death) |
 | `AutoVault` | `@EventHook`s driving a command (`enterVault`) |
 | `RealmFinder` | reading `realmPortals()` from an event hook; pure selection logic |
@@ -184,3 +186,23 @@ Optional:
 | `CHEST_REPLICATION_BAZAAR=LeftBazaar` | preferred portal; use `RightBazaar` or `any` as needed |
 | `CHEST_REPLICATION_CHECK_DELAY_MS=5000` | delay before each inventory/backpack snapshot |
 | `CHEST_REPLICATION_MOVE_SETTLE_MS=2500` | delay after `INVSWAP`s before continuing |
+
+### `AutoQuest`
+
+`AutoQuest` waits for Nexus realm portals, walks to the least-populated open
+portal, enters it, listens for `QUESTOBJID`, and repeatedly walks toward the
+visible quest object. While questing it aims at nearby tracked objects that are
+not known player classes or portal types.
+
+Optional environment variables:
+
+| var | meaning |
+|-----|---------|
+| `AUTO_QUEST_SHOOT_RANGE=6` | max tile distance for auto-shoot targets |
+| `AUTO_QUEST_SHOOT_INTERVAL_MS=450` | delay between shooting bursts |
+| `AUTO_QUEST_MAX_SHOTS=3` | max nearby targets aimed at per burst |
+| `AUTO_QUEST_REFRESH_MS=1200` | delay between quest movement target refreshes |
+
+Current limitation: enemy detection is packet-state based until object metadata
+is loaded into the client. The plugin filters out known player classes and
+portals, then treats the remaining nearby tracked objects as shootable.

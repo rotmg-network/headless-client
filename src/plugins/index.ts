@@ -2,6 +2,7 @@
 // Add new plugins here (or switch to dynamic discovery later).
 import './auto-vault';
 import './anti-spam';
+import './auto-quest';
 import './chat-logger';
 import './chest-replication';
 import './game-id-checker';

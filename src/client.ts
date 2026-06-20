@@ -14,6 +14,7 @@ import {
   UpdateAckPacket,
   GotoAckPacket,
   ShootAckPacket,
+  PlayerShootPacket,
   MapInfoPacket,
   UpdatePacket,
   NewTickPacket,
@@ -101,6 +102,7 @@ export class Client extends EventEmitter {
   private readonly seenUnknown = new Set<number>();
   private player: PlayerData | undefined;
   private inQueue = false;
+  private nextBulletId = 0;
 
   // Navigation / vault state
   private wantVault = false;
@@ -247,6 +249,31 @@ export class Client extends EventEmitter {
     packet.slotObject1 = this.slotObject(fromSlotId);
     packet.slotObject2 = this.slotObject(toSlotId);
     this.io.send(packet);
+    return true;
+  }
+
+  /** Aims at a world position and sends a PLAYERSHOOT packet with the equipped weapon. */
+  shootAt(target: { x: number; y: number }, weaponSlot = 0): boolean {
+    if (!this.player || this.objectId === -1) {
+      return false;
+    }
+    const weaponType = this.player.inventory?.[weaponSlot] ?? -1;
+    if (weaponType === -1) {
+      return false;
+    }
+    const shot = new PlayerShootPacket();
+    shot.time = this.time();
+    shot.bulletId = this.nextBulletId++ % 128;
+    shot.containerType = weaponType;
+    shot.unknownByte = 0;
+    shot.startingPos.x = this.pos.x;
+    shot.startingPos.y = this.pos.y;
+    shot.angle = Math.atan2(target.y - this.pos.y, target.x - this.pos.x);
+    shot.isBurst = false;
+    shot.unknownShort = 0;
+    shot.playerPos.x = this.pos.x;
+    shot.playerPos.y = this.pos.y;
+    this.io.send(shot);
     return true;
   }
 
@@ -731,8 +758,15 @@ export class Client extends EventEmitter {
     for (const status of p.statuses) {
       if (status.objectId === this.objectId) {
         this.player = processObjectStatus(status, this.player);
-      } else if (this.portals.has(status.objectId)) {
-        this.trackRealmPortal(status);
+      } else {
+        const tracked = this.objects.get(status.objectId);
+        if (tracked) {
+          tracked.x = status.pos.x;
+          tracked.y = status.pos.y;
+        }
+        if (this.portals.has(status.objectId)) {
+          this.trackRealmPortal(status);
+        }
       }
     }
   }
