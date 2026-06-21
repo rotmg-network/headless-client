@@ -96,6 +96,11 @@ export class Client extends EventEmitter {
   private objectId = -1;
   private pos = { x: 0, y: 0 };
   private posKnown = false;
+  /** Latest authoritative self-position the server reported via NewTick. Drives movement so we never outrun the server. */
+  private serverPos: { x: number; y: number } | undefined;
+  private moveBestDist = Infinity;
+  private moveStallMs = 0;
+  private moveStallWarned = false;
   private connectStart = 0;
   private lastFrameTime = 0;
   private tickCount = 0;
@@ -103,6 +108,14 @@ export class Client extends EventEmitter {
   private player: PlayerData | undefined;
   private inQueue = false;
   private nextBulletId = 0;
+  private stalled = false;
+  private stalledAt = 0;
+  /** Outgoing packets captured while stalled, flushed in order on resume (mimics a TCP send buffer). */
+  private readonly stallQueue: Packet[] = [];
+  private stallRawSend: ((packet: Packet) => void) | undefined;
+  private stallRecvUpdates = 0;
+  private stallRecvTicks = 0;
+  private static readonly STALL_QUEUE_CAP = 20000;
 
   // Navigation / vault state
   private wantVault = false;
@@ -178,6 +191,9 @@ export class Client extends EventEmitter {
   /** Walks the player toward a position (cleared on arrival, emits 'reachedTarget'). */
   moveTo(target: { x: number; y: number }, arriveThreshold = config.arriveThreshold): void {
     this.target = { x: target.x, y: target.y, threshold: arriveThreshold };
+    this.moveBestDist = Infinity;
+    this.moveStallMs = 0;
+    this.moveStallWarned = false;
   }
 
   /** Short account label used in logs and console commands. */
@@ -190,9 +206,14 @@ export class Client extends EventEmitter {
     return this.player;
   }
 
-  /** Current estimated player position. */
+  /** Current estimated (dead-reckoned) player position. */
   getPosition(): { x: number; y: number } {
     return { x: this.pos.x, y: this.pos.y };
+  }
+
+  /** Latest position the server reported for us (authoritative), if any. */
+  getServerPosition(): { x: number; y: number } | undefined {
+    return this.serverPos ? { ...this.serverPos } : undefined;
   }
 
   /** Current in-world object id, or -1 before CreateSuccess. */
@@ -250,6 +271,16 @@ export class Client extends EventEmitter {
     packet.slotObject2 = this.slotObject(toSlotId);
     this.io.send(packet);
     return true;
+  }
+
+  /** Current player inventory snapshot (20 slots: 0-3 equip, 4-11 inventory, 12-19 backpack), or undefined. */
+  getInventory(): number[] | undefined {
+    return this.player ? [...this.player.inventory] : undefined;
+  }
+
+  /** Whether the player has a backpack (slots 12-19 usable). */
+  hasBackpack(): boolean {
+    return this.player?.hasBackpack ?? false;
   }
 
   /** Aims at a world position and sends a PLAYERSHOOT packet with the equipped weapon. */
@@ -325,6 +356,86 @@ export class Client extends EventEmitter {
     }
     this.wantVault = true;
     this.findVaultPortal(); // act now if the nexus objects are already known
+  }
+
+  /**
+   * Stalls the connection: while stalled, outgoing packets are not sent but
+   * *queued* in order — mimicking a real lagout, where the client's TCP send
+   * buffer holds traffic and delivers it once the link recovers rather than
+   * discarding it. We keep *reading* the socket (the byte stream and RC4 cipher
+   * stay in sync, which a true pause/detach would break) and the handlers still
+   * generate the per-tick UpdateAck/Move/Pong, so on {@link resumeSocket} the
+   * full ack stream flushes and the server's ack accounting balances. The
+   * connection is NOT closed. Returns false if already stalled or not connected.
+   */
+  stallSocket(): boolean {
+    if (this.stalled || !this.socket || this.socket.destroyed) {
+      return false;
+    }
+    this.stalled = true;
+    this.stalledAt = this.time();
+    this.stallQueue.length = 0;
+    this.stallRecvUpdates = 0;
+    this.stallRecvTicks = 0;
+    console.log(`${this.tag} ⏸ socket stalled (simulated lag) — queueing outgoing until resumed`);
+    return true;
+  }
+
+  /**
+   * Resumes a stalled socket and flushes the queued outgoing packets in order,
+   * so the server receives the acks it was owed during the stall. Returns the
+   * stall duration in ms, or -1 if not stalled.
+   */
+  resumeSocket(): number {
+    if (!this.stalled || !this.socket) {
+      return -1;
+    }
+    const heldMs = this.time() - this.stalledAt;
+    const queued = this.stallQueue.length;
+    const acks = this.stallQueue.filter((p) => p.type === PacketType.UPDATEACK).length;
+    const moves = this.stallQueue.filter((p) => p.type === PacketType.MOVE).length;
+    this.stalled = false;
+    if (!this.socket.destroyed && this.stallRawSend) {
+      for (const packet of this.stallQueue) {
+        this.stallRawSend(packet);
+      }
+    }
+    this.stallQueue.length = 0;
+    // Each UPDATE owed an UpdateAck and each NEWTICK owed a Move; if the flushed
+    // counts match what arrived during the stall, the replay was complete.
+    const updMatch = acks === this.stallRecvUpdates ? '✓' : `⚠ ${this.stallRecvUpdates} recvd`;
+    const tickMatch = moves === this.stallRecvTicks ? '✓' : `⚠ ${this.stallRecvTicks} recvd`;
+    console.log(
+      `${this.tag} ▶ socket resumed after ${heldMs}ms — flushed ${queued} queued packet(s): ` +
+        `${acks} UpdateAck (${updMatch}), ${moves} Move (${tickMatch}), ${queued - acks - moves} other` +
+        `${this.socket.destroyed ? ' (server had already dropped us)' : ''}`,
+    );
+    return heldMs;
+  }
+
+  /**
+   * Wraps the current io's send so that, while {@link stalled}, every outgoing
+   * packet is queued instead of sent (and flushed in order on resume). Installed
+   * once per connect (io is recreated on each connect).
+   */
+  private installStallGate(): void {
+    const io = this.io;
+    const rawSend = io.send.bind(io);
+    this.stallRawSend = rawSend;
+    io.send = (packet: Packet): void => {
+      if (this.stalled) {
+        if (this.stallQueue.length < Client.STALL_QUEUE_CAP) {
+          this.stallQueue.push(packet);
+        }
+        return;
+      }
+      rawSend(packet);
+    };
+  }
+
+  /** Whether the socket is currently stalled. */
+  isStalled(): boolean {
+    return this.stalled;
   }
 
   /**
@@ -498,18 +609,26 @@ export class Client extends EventEmitter {
     }, ms);
   }
 
-  /** Moves `pos` toward `target` by the distance the player can cover in `dt` ms. */
+  /**
+   * Advances `pos` one tick toward `target`. Critically, the step is taken from
+   * the server's authoritative position (when known), not our dead-reckoned one
+   * — so each MOVE we send stays within ~1 tile of where the server agrees we
+   * are. Stepping from the local position lets it race tens of tiles ahead of
+   * the server, which the server's anti-speedhack check rejects: it pins us in
+   * place and every move (and any USE_PORTAL there) is silently dropped.
+   */
   private stepToward(target: { x: number; y: number }, dt: number): void {
+    const base = this.serverPos ?? this.pos;
     const spd = (this.player?.spd ?? 0) + (this.player?.spdBoost ?? 0);
     const tilesPerMs = Client.SPEED_MIN + (spd / 75) * (Client.SPEED_MAX - Client.SPEED_MIN);
     const step = tilesPerMs * dt;
-    const dx = target.x - this.pos.x;
-    const dy = target.y - this.pos.y;
+    const dx = target.x - base.x;
+    const dy = target.y - base.y;
     const dist = Math.hypot(dx, dy);
     if (dist <= step || dist === 0) {
       this.pos = { x: target.x, y: target.y };
     } else {
-      this.pos = { x: this.pos.x + (dx / dist) * step, y: this.pos.y + (dy / dist) * step };
+      this.pos = { x: base.x + (dx / dist) * step, y: base.y + (dy / dist) * step };
     }
   }
 
@@ -550,8 +669,11 @@ export class Client extends EventEmitter {
       clearTimeout(this.reconnectTimer); // a (re)connect cancels any pending scheduled one
       this.reconnectTimer = undefined;
     }
+    this.stalled = false;
+    this.stallQueue.length = 0;
     this.socket = new net.Socket();
     this.io = new PacketIO({ socket: this.socket });
+    this.installStallGate();
     this.io.setMaxListeners(0);
     this.io.on('error', (err: Error) => console.error(`${this.tag} io error:`, err.message));
     this.registerHandlers();
@@ -690,6 +812,9 @@ export class Client extends EventEmitter {
 
   /** Acknowledges object updates and refreshes tracked entities and portals. */
   private handleUpdate(p: UpdatePacket): void {
+    if (this.stalled) {
+      this.stallRecvUpdates++;
+    }
     this.io.send(new UpdateAckPacket());
     if (!this.posKnown && p.pos) {
       this.pos = { x: p.pos.x, y: p.pos.y };
@@ -723,6 +848,9 @@ export class Client extends EventEmitter {
 
   /** Drives each game tick: movement, status updates, portal use, and events. */
   private handleNewTick(p: NewTickPacket): void {
+    if (this.stalled) {
+      this.stallRecvTicks++;
+    }
     const now = this.time();
     const dt = this.lastFrameTime > 0 ? now - this.lastFrameTime : 0;
     this.lastFrameTime = now;
@@ -740,11 +868,40 @@ export class Client extends EventEmitter {
       return;
     }
     this.stepToward(this.target, dt);
+    this.detectMoveStall(dt);
     if (Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y) < this.target.threshold) {
       console.log(`${this.tag} reached move target`);
+      this.moveStallMs = 0;
+      this.moveBestDist = Infinity;
       const reached = { x: this.target.x, y: this.target.y };
       this.target = undefined;
       this.emit(ClientEvent.ReachedTarget, reached);
+    }
+  }
+
+  /**
+   * Warns when the server's position stops closing on the move target — i.e.
+   * we're walking but the server won't let us (a nexus wall/obstacle blocking
+   * the straight-line path). Pure diagnostics; does not alter control flow.
+   */
+  private detectMoveStall(dt: number): void {
+    if (!this.target || !this.serverPos) {
+      return;
+    }
+    const serverDist = Math.hypot(this.target.x - this.serverPos.x, this.target.y - this.serverPos.y);
+    if (serverDist < this.moveBestDist - 0.1) {
+      this.moveBestDist = serverDist;
+      this.moveStallMs = 0;
+      this.moveStallWarned = false;
+      return;
+    }
+    this.moveStallMs += dt;
+    if (this.moveStallMs > 3000 && !this.moveStallWarned) {
+      this.moveStallWarned = true;
+      console.warn(
+        `${this.tag} ⚠ movement stalled — server stuck ${serverDist.toFixed(1)} tiles from target ` +
+          `at (${this.serverPos.x.toFixed(2)},${this.serverPos.y.toFixed(2)}); likely a blocked path`,
+      );
     }
   }
 
@@ -765,6 +922,7 @@ export class Client extends EventEmitter {
   private updateStatuses(p: NewTickPacket): void {
     for (const status of p.statuses) {
       if (status.objectId === this.objectId) {
+        this.serverPos = { x: status.pos.x, y: status.pos.y };
         this.player = processObjectStatus(status, this.player);
       } else {
         const tracked = this.objects.get(status.objectId);
@@ -791,7 +949,12 @@ export class Client extends EventEmitter {
     ) {
       return;
     }
-    console.log(`${this.tag} → UsePortal(${this.vaultPortalId}) (attempt ${this.usePortalAttempts + 1})`);
+    const sp = this.serverPos;
+    console.log(
+      `${this.tag} → UsePortal(${this.vaultPortalId}) (attempt ${this.usePortalAttempts + 1}) ` +
+        `local (${this.pos.x.toFixed(2)},${this.pos.y.toFixed(2)}) ` +
+        `server ${sp ? `(${sp.x.toFixed(2)},${sp.y.toFixed(2)})` : '?'}`,
+    );
     const use = new UsePortalPacket();
     use.objectId = this.vaultPortalId;
     this.io.send(use);

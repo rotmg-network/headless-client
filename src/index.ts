@@ -5,7 +5,9 @@ import { Client } from './client';
 import { config, setConfig } from './config';
 import { PluginManager } from './plugin-manager';
 import { GameIdChecker } from './plugins/game-id-checker';
+import { PetBagRoundTrip } from './plugins/pet-bag-round-trip';
 import { RealmHostMapper } from './plugins/realm-host-mapper';
+import { SocketStall } from './plugins/socket-stall';
 
 /**
  * A tiny stdin console for altering the global config and issuing commands
@@ -17,11 +19,13 @@ import { RealmHostMapper } from './plugins/realm-host-mapper';
  *   connect <alias> <server>  — connect a client to a server (name or host)
  *   realms <alias>            — list the realm portals a client can see
  *   hosts <alias>             — list RealmHostMapper's portal -> host table
- *   gameids <alias>           — list game-id-checker probe results
+ *   gameids <alias>           — list GameIdChecker probe results
+ *   invtest <alias>           — run the PetBagRoundTrip inventory↔backpack test
+ *   stalltest <alias> [ms]    — stall the socket for [ms] to probe server tolerance
  */
 function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugins: PluginManager): void {
   console.log(
-    'console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a> | hosts <a> | gameids <a> | plugins <a> | plugin <a> load|unload <name>',
+    'console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a> | hosts <a> | gameids <a> | invtest <a> | stalltest <a> [ms] | plugins <a> | plugin <a> load|unload <name>',
   );
   const withClient = (alias: string, fn: (client: Client) => void): void => {
     const client = clients.get(alias);
@@ -51,6 +55,12 @@ function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugi
         case 'escape':
           withClient(args[0], (c) => c.escape());
           break;
+        case 'stall':
+          withClient(args[0], (c) => c.stallSocket());
+          break;
+        case 'resume':
+          withClient(args[0], (c) => c.resumeSocket());
+          break;
         case 'connect': {
           const target = args[1] ?? '';
           const server = servers.find((s) => s.name.toLowerCase() === target.toLowerCase());
@@ -76,12 +86,33 @@ function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugi
           break;
         case 'gameids':
           withClient(args[0], (c) => {
-            const checker = plugins.get<GameIdChecker>(c, 'game-id-checker');
+            const checker = plugins.get<GameIdChecker>(c, 'GameIdChecker');
             if (!checker) {
-              console.log(`[${c.alias}] game-id-checker is not loaded`);
+              console.log(`[${c.alias}] GameIdChecker is not loaded`);
               return;
             }
             console.table(checker.checks());
+          });
+          break;
+        case 'invtest':
+          withClient(args[0], (c) => {
+            const trip = plugins.get<PetBagRoundTrip>(c, 'PetBagRoundTrip');
+            if (!trip) {
+              console.log(`[${c.alias}] PetBagRoundTrip is not loaded`);
+              return;
+            }
+            void trip.run(c);
+          });
+          break;
+        case 'stalltest':
+          withClient(args[0], (c) => {
+            const probe = plugins.get<SocketStall>(c, 'SocketStall');
+            if (!probe) {
+              console.log(`[${c.alias}] SocketStall is not loaded`);
+              return;
+            }
+            const ms = Number(args[1]);
+            void probe.run(c, Number.isFinite(ms) && ms > 0 ? ms : undefined);
           });
           break;
         case 'plugins':
