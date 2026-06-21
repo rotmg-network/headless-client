@@ -55,15 +55,22 @@ export class AutoQuest {
     DEFAULT_PORTAL_ARRIVE_THRESHOLD,
   );
 
-  /** Starts by walking to the realm portal area when the client reaches Nexus. */
+  /**
+   * (Re)starts the run whenever the client reaches the Nexus — including after
+   * escaping back from a realm or the vault. EnterNexus fires once per nexus
+   * entry, so we re-arm unconditionally; the old `state === 'idle'` guard left
+   * the plugin permanently stuck after its first cycle (state never returns to
+   * 'idle'). A hard `stopped` is the one state we don't override.
+   */
   @EventHook(ClientEvent.EnterNexus)
   onEnterNexus(client: Client): void {
-    if (this.state !== 'idle') {
+    if (this.state === 'stopped') {
       return;
     }
     this.failedPortalIds.clear();
     this.targetPortal = undefined;
     this.portalUseAttempts = 0;
+    this.questObjectId = -1;
     this.state = 'walkingPortalArea';
     console.log(`[${client.alias}] AutoQuest: walking to realm portal area`);
     client.moveTo(PORTAL_AREA);
@@ -168,15 +175,26 @@ export class AutoQuest {
       this.stepTowardPortal(client);
       return;
     }
+    // Re-resolve the portal from the live list by name: realm portals can be
+    // dropped and re-added (with a fresh objectId) as realms cycle, so the id
+    // captured when we picked it ~10s ago may be stale. UsePortal against a
+    // stale id is silently ignored by the server.
+    const live = client.realmPortals().find((p) => p.name === this.targetPortal!.name);
+    if (live) {
+      this.targetPortal = live;
+    }
     this.portalUseAttempts++;
     this.lastPortalUseAt = Date.now();
     const useId = this.portalUseId(this.targetPortal, this.portalUseAttempts);
     const pos = client.getPosition();
+    const sp = client.getServerPosition();
     console.log(
       `[${client.alias}] AutoQuest: UsePortal(${useId}) ` +
         `for ${this.targetPortal.name} (attempt ${this.portalUseAttempts}, ` +
-        `objectId ${this.targetPortal.objectId}, connect ${this.targetPortal.connectId ?? '?'}:${this.targetPortal.connectValueTwo ?? '?'}, ` +
-        `pos ${pos.x.toFixed(2)},${pos.y.toFixed(2)}, portal ${this.targetPortal.x.toFixed(2)},${this.targetPortal.y.toFixed(2)})`,
+        `objectId ${this.targetPortal.objectId}, ` +
+        `local ${pos.x.toFixed(2)},${pos.y.toFixed(2)}, ` +
+        `server ${sp ? `${sp.x.toFixed(2)},${sp.y.toFixed(2)}` : '?'}, ` +
+        `portal ${this.targetPortal.x.toFixed(2)},${this.targetPortal.y.toFixed(2)})`,
     );
     client.usePortal(useId);
   }
