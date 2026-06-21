@@ -129,7 +129,7 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
 - **Runtime console:**
   - `plugins <alias>` — list loaded plugins + all available (name + description)
   - `hosts <alias>` — print `RealmHostMapper`'s portal -> hostname table
-  - `gameids <alias>` — print `game-id-checker` probe results
+  - `gameids <alias>` — print `GameIdChecker` probe results
   - `plugin <alias> load <name>`
   - `plugin <alias> unload <name>` — removes all its hooks cleanly
 
@@ -144,12 +144,12 @@ You can also subscribe directly with `client.on(ClientEvent.X, fn)` /
 | `AutoVault` | `@EventHook`s driving a command (`enterVault`) |
 | `RealmFinder` | reading `realmPortals()` from an event hook; pure selection logic |
 | `RealmHostMapper` | multi-step event/packet workflow: visit portals, record Reconnect hosts, escape back |
-| `game-id-checker` | controlled live probing of known and candidate `Hello.gameId` values |
+| `GameIdChecker` | controlled live probing of known and candidate `Hello.gameId` values |
 | `ChestReplication` | test-server inventory/backpack sync diagnostic across Bazaar/server transitions |
 
-### `game-id-checker`
+### `GameIdChecker`
 
-Load `"game-id-checker"` on one account to probe every known `GameId` plus the
+Load `"GameIdChecker"` on one account to probe every known `GameId` plus the
 currently undocumented gaps between `-13` and `-1`. It records whether each id
 reaches `MapInfo` and whether it fully loads into the world with
 `CreateSuccess`.

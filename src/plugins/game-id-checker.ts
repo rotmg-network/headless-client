@@ -90,7 +90,7 @@ export class GameIdChecker {
     });
     if (shouldStop) {
       this.stop();
-      console.error(`[${client.alias}] game-id-checker: stopped after rate-limit failure`);
+      console.error(`[${client.alias}] GameIdChecker: stopped after rate-limit failure`);
     }
   }
 
@@ -102,7 +102,7 @@ export class GameIdChecker {
     this.started = true;
     this.running = true;
     console.log(
-      `[${client.alias}] game-id-checker: testing ${this.candidates.length} game ids ` +
+      `[${client.alias}] GameIdChecker: testing ${this.candidates.length} game ids ` +
         `(${this.delayMs}ms delay, ${this.timeoutMs}ms timeout)`,
     );
     this.scheduleNext(client, 0);
@@ -133,7 +133,7 @@ export class GameIdChecker {
 
     this.current = next;
     this.upsertResult(next, { status: 'pending' });
-    console.log(`[${client.alias}] game-id-checker: probing ${next.label} (${next.gameId})`);
+    console.log(`[${client.alias}] GameIdChecker: probing ${next.label} (${next.gameId})`);
     client.connectToGameId(next.gameId);
     this.timer = setTimeout(() => {
       if (this.current?.gameId === next.gameId) {
@@ -151,7 +151,7 @@ export class GameIdChecker {
     this.upsertResult(candidate, update);
     const result = this.resultFor(candidate);
     console.log(
-      `[${client.alias}] game-id-checker: ${candidate.label} (${candidate.gameId}) -> ` +
+      `[${client.alias}] GameIdChecker: ${candidate.label} (${candidate.gameId}) -> ` +
         `${result.status}${result.mapName ? ` "${result.mapName}"` : ''}${result.error ? ` (${result.error})` : ''}`,
     );
     this.current = undefined;
@@ -170,7 +170,7 @@ export class GameIdChecker {
     this.current = undefined;
     this.clearTimer();
     const rows = this.checks();
-    console.log(`[${client.alias}] game-id-checker: complete`);
+    console.log(`[${client.alias}] GameIdChecker: complete`);
     console.table(
       rows.map((row) => ({
         gameId: row.gameId,
