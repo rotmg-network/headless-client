@@ -36,7 +36,7 @@ npm start
 ```
 
 `accounts.json` and `.token-cache.json` are **gitignored** — secrets never get
-committed.
+committed to the repo.
 
 ### `accounts.json` format
 
@@ -48,7 +48,9 @@ An array of account objects:
     "guid": "you@example.com",
     "password": "hunter2",
     "alias": "main",
+    // connect to Vault automatically
     "enterVault": false,
+    // list of plugins to load for this account
     "plugins": ["ChatLogger", "RealmFinder", "PacketLogger"]
   }
 ]
@@ -59,7 +61,7 @@ An array of account objects:
 | `guid` | yes | account email |
 | `password` | yes | account password |
 | `alias` | no | short name used in logs and console commands (defaults to `guid`) |
-| `enterVault` | no | walk to the vault automatically after entering the nexus |
+| `enterVault` | no | enter the vault automatically after entering the nexus |
 | `plugins` | no | plugin names to load for this account on connect |
 
 Multiple accounts are spread across distinct servers automatically to avoid
@@ -83,9 +85,9 @@ npm run build        # type-check / compile to JS
 | `DEBUG_PACKETS=types` | log every incoming packet type |
 | `DEBUG_PACKETS=hex` | log each type and hexdump its payload |
 | `DEBUG_PACKETS=unknown` | log + hexdump only unmapped packet ids |
-| `GAME_ID_CHECK_EXTRA=-20:-14,-12` | extra game ids/ranges for `game-id-checker` to probe |
-| `GAME_ID_CHECK_DELAY_MS=5000` | delay between `game-id-checker` reconnect attempts |
-| `GAME_ID_CHECK_TIMEOUT_MS=20000` | per-id timeout before `game-id-checker` marks a probe failed |
+| `GAME_ID_CHECK_EXTRA=-20:-14,-12` | extra game ids/ranges for `GameIdChecker` to probe |
+| `GAME_ID_CHECK_DELAY_MS=5000` | delay between `GameIdChecker` reconnect attempts |
+| `GAME_ID_CHECK_TIMEOUT_MS=20000` | per-id timeout before `GameIdChecker` marks a probe failed |
 | `CHEST_REPLICATION_TEST_HOSTS=host1,host2` | required allowlist for `ChestReplication` test-server runs |
 | `CHEST_REPLICATION_NEXT_SERVER=host2` | optional explicit second test server for `ChestReplication` |
 | `CHEST_REPLICATION_BAZAAR=LeftBazaar` | preferred Bazaar portal (`LeftBazaar`, `RightBazaar`, or `any`) |
@@ -105,7 +107,7 @@ When attached to a TTY (or with `CONSOLE=1`), a stdin console is available:
 | `connect <alias> <server>` | connect a client to a server (name or host) |
 | `realms <alias>` | list the realm portals a client can see |
 | `hosts <alias>` | list RealmHostMapper portal details, including resolved hostnames |
-| `gameids <alias>` | list `game-id-checker` results |
+| `gameids <alias>` | list `GameIdChecker` results |
 | `plugins <alias>` | list loaded + available plugins |
 | `plugin <alias> load\|unload <name>` | load/unload a plugin at runtime |
 
