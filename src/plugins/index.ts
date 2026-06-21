@@ -6,8 +6,11 @@ import './auto-quest';
 import './chat-logger';
 import './chest-replication';
 import './game-id-checker';
+import './inventory-tracker';
 import './packet-logger';
+import './pet-bag-round-trip';
 import './realm-finder';
 import './realm-host-mapper';
+import './socket-stall';
 
 export * from './decorators';
