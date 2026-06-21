@@ -17,7 +17,7 @@ export class PacketLogger {
   @PacketHook()
   onNotification(client: Client, p: NotificationPacket): void {
     if (p.message) {
-      console.log(`[${client.alias}] notification(${p.effect}): ${p.message}`);
+      console.log(`[${client.alias}] notification(${p.effect}): ${p.message}\n${p}`);
     }
   }
 
