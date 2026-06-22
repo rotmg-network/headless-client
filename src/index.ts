@@ -6,6 +6,7 @@ import { config, setConfig } from './config';
 import { PluginManager } from './plugin-manager';
 import { GameIdChecker } from './plugins/game-id-checker';
 import { PetBagRoundTrip } from './plugins/pet-bag-round-trip';
+import { PetToVault } from './plugins/pet-to-vault';
 import { RealmHostMapper } from './plugins/realm-host-mapper';
 import { SocketStall } from './plugins/socket-stall';
 
@@ -14,18 +15,27 @@ import { SocketStall } from './plugins/socket-stall';
  * while the program runs. Commands:
  *   show                      — print the current config
  *   set <key> <value>         — change a config field
+ *   pos <alias>               — print the client's current map position
+ *   say <alias> <message>     — send a chat message (PlayerText) from a client
+ *   sayall <message>          — every client sends the chat message
+ *   tick <alias>              — print the latest game-tick info
+ *   debug <alias>             — print a full client state snapshot
  *   vault <alias>             — tell a client to enter the vault
+ *   stall <alias>             — freeze the socket (pause reads, queue outgoing)
+ *   resume <alias>            — resume a stalled socket, flushing queued outgoing
+ *   invswap <a> <from> <to>   — swap two inventory slots (queued if stalled)
  *   escape <alias>            — send the client back to the nexus
  *   connect <alias> <server>  — connect a client to a server (name or host)
  *   realms <alias>            — list the realm portals a client can see
  *   hosts <alias>             — list RealmHostMapper's portal -> host table
  *   gameids <alias>           — list GameIdChecker probe results
  *   invtest <alias>           — run the PetBagRoundTrip inventory↔backpack test
+ *   pettovault <alias>        — move an inventory item into the pet bag, then the vault
  *   stalltest <alias> [ms]    — stall the socket for [ms] to probe server tolerance
  */
 function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugins: PluginManager): void {
   console.log(
-    'console ready — show | set <k> <v> | vault <a> | escape <a> | connect <a> <server> | realms <a> | hosts <a> | gameids <a> | invtest <a> | stalltest <a> [ms] | plugins <a> | plugin <a> load|unload <name>',
+    'console ready — show | set <k> <v> | pos <a> | say <a> <msg> | sayall <msg> | tick <a> | debug <a> | vault <a> | escape <a> | stall <a> | resume <a> | invswap <a> <from> <to> | connect <a> <server> | realms <a> | hosts <a> | gameids <a> | invtest <a> | pettovault <a> | stalltest <a> [ms] | plugins <a> | plugin <a> load|unload <name>',
   );
   const withClient = (alias: string, fn: (client: Client) => void): void => {
     const client = clients.get(alias);
@@ -60,6 +70,66 @@ function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugi
           break;
         case 'resume':
           withClient(args[0], (c) => c.resumeSocket());
+          break;
+        case 'invswap': {
+          const from = Number(args[1]);
+          const to = Number(args[2]);
+          if (!args[0] || !Number.isInteger(from) || !Number.isInteger(to)) {
+            console.log('usage: invswap <alias> <fromSlot> <toSlot>  (slots: 0-3 equip, 4-11 inv, 12-19 backpack)');
+            break;
+          }
+          withClient(args[0], (c) => {
+            const ok = c.swapInventorySlots(from, to);
+            const how = ok ? (c.isStalled() ? 'queued (stalled — flushes on resume)' : 'sent') : 'failed (not in-world)';
+            console.log(`[${c.alias}] invswap slot ${from} → ${to}: ${how}`);
+          });
+          break;
+        }
+        case 'pos':
+          withClient(args[0], (c) => {
+            const local = c.getPosition();
+            const server = c.getServerPosition();
+            console.log(
+              `[${c.alias}] pos local (${local.x.toFixed(2)}, ${local.y.toFixed(2)}) ` +
+                (server ? `server (${server.x.toFixed(2)}, ${server.y.toFixed(2)})` : 'server unknown'),
+            );
+          });
+          break;
+        case 'say': {
+          const message = args.slice(1).join(' ');
+          if (!args[0] || !message) {
+            console.log('usage: say <alias> <message>');
+            break;
+          }
+          withClient(args[0], (c) => {
+            c.say(message);
+            console.log(`[${c.alias}] say: ${message}`);
+          });
+          break;
+        }
+        case 'sayall': {
+          const message = args.join(' ');
+          if (!message) {
+            console.log('usage: sayall <message>');
+            break;
+          }
+          for (const c of clients.values()) {
+            c.say(message);
+          }
+          console.log(`sayall → ${clients.size} client(s): ${message}`);
+          break;
+        }
+        case 'tick':
+          withClient(args[0], (c) => {
+            const t = c.getTickInfo();
+            console.log(
+              `[${c.alias}] tick ${t.tickId} (count ${t.tickCount}), server interval ${t.tickTimeMs}ms, ` +
+                (t.msSinceTick < 0 ? 'no tick yet' : `${t.msSinceTick}ms since last tick`),
+            );
+          });
+          break;
+        case 'debug':
+          withClient(args[0], (c) => console.table(c.debugInfo()));
           break;
         case 'connect': {
           const target = args[1] ?? '';
@@ -102,6 +172,16 @@ function startConsole(clients: Map<string, Client>, servers: ServerInfo[], plugi
               return;
             }
             void trip.run(c);
+          });
+          break;
+        case 'pettovault':
+          withClient(args[0], (c) => {
+            const flow = plugins.get<PetToVault>(c, 'PetToVault');
+            if (!flow) {
+              console.log(`[${c.alias}] PetToVault is not loaded`);
+              return;
+            }
+            void flow.run(c);
           });
           break;
         case 'stalltest':

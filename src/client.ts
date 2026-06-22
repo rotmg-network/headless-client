@@ -25,12 +25,14 @@ import {
   EnemyShootPacket,
   CreateSuccessPacket,
   QueueInfoPacket,
-  ShowAllyShootPacket,
+  ChangeAllyShootPacket,
   UsePortalPacket,
   InvSwapPacket,
+  PlayerTextPacket,
   VaultContentPacket,
   EscapePacket,
   SlotObjectData,
+  StatData,
   ObjectData,
   ObjectStatusData,
   StatType,
@@ -65,6 +67,16 @@ interface MutablePacketContext extends PacketContext {
   cancelReason?: string;
 }
 
+/** A single slot in some container, used to build INVSWAP packets. */
+export interface SlotRef {
+  /** Object id of the container that owns the slot (player, pet, vault chest). */
+  objectId: number;
+  /** Slot index within that container (e.g. 0 for the first slot). */
+  slotId: number;
+  /** Item id presently in the slot, or -1 if the slot is empty. */
+  itemType: number;
+}
+
 interface PacketHandlerEntry {
   handler: (packet: Packet, ctx: PacketContext) => void;
   priority: number;
@@ -94,6 +106,8 @@ export class Client extends EventEmitter {
 
   // Current player state
   private objectId = -1;
+  /** Object id of the active pet (from the player's PET_OBJECT_ID stat); -1 until reported. Reset on each map change. */
+  private petObjectId = -1;
   private pos = { x: 0, y: 0 };
   private posKnown = false;
   /** Latest authoritative self-position the server reported via NewTick. Drives movement so we never outrun the server. */
@@ -104,6 +118,9 @@ export class Client extends EventEmitter {
   private connectStart = 0;
   private lastFrameTime = 0;
   private tickCount = 0;
+  /** Tick id from the most recent NewTick, and the server-reported ms between the last two ticks. */
+  private lastTickId = -1;
+  private lastTickTime = 0;
   private readonly seenUnknown = new Set<number>();
   private player: PlayerData | undefined;
   private inQueue = false;
@@ -113,8 +130,6 @@ export class Client extends EventEmitter {
   /** Outgoing packets captured while stalled, flushed in order on resume (mimics a TCP send buffer). */
   private readonly stallQueue: Packet[] = [];
   private stallRawSend: ((packet: Packet) => void) | undefined;
-  private stallRecvUpdates = 0;
-  private stallRecvTicks = 0;
   private static readonly STALL_QUEUE_CAP = 20000;
 
   // Navigation / vault state
@@ -188,6 +203,13 @@ export class Client extends EventEmitter {
     this.io?.send(packet);
   }
 
+  /** Sends a chat message as this player (PLAYERTEXT). */
+  say(message: string): void {
+    const packet = new PlayerTextPacket();
+    packet.text = message;
+    this.io?.send(packet);
+  }
+
   /** Walks the player toward a position (cleared on arrival, emits 'reachedTarget'). */
   moveTo(target: { x: number; y: number }, arriveThreshold = config.arriveThreshold): void {
     this.target = { x: target.x, y: target.y, threshold: arriveThreshold };
@@ -216,9 +238,57 @@ export class Client extends EventEmitter {
     return this.serverPos ? { ...this.serverPos } : undefined;
   }
 
+  /** Latest game-tick info: server tick id, local tick counter, server tick interval, and ms since the last tick. */
+  getTickInfo(): { tickId: number; tickCount: number; tickTimeMs: number; msSinceTick: number } {
+    return {
+      tickId: this.lastTickId,
+      tickCount: this.tickCount,
+      tickTimeMs: this.lastTickTime,
+      msSinceTick: this.lastFrameTime > 0 ? this.time() - this.lastFrameTime : -1,
+    };
+  }
+
+  /** A snapshot of the client's current state, for the `debug` console command. */
+  debugInfo(): Record<string, unknown> {
+    const player = this.player;
+    return {
+      alias: this.opts.alias,
+      host: `${this.host}:${this.port}`,
+      gameId: this.gameId,
+      connected: !!this.socket && !this.socket.destroyed,
+      objectId: this.objectId,
+      petObjectId: this.petObjectId,
+      inVault: this.inVault,
+      inQueue: this.inQueue,
+      stalled: this.stalled,
+      localPos: `(${this.pos.x.toFixed(2)}, ${this.pos.y.toFixed(2)})`,
+      serverPos: this.serverPos ? `(${this.serverPos.x.toFixed(2)}, ${this.serverPos.y.toFixed(2)})` : 'unknown',
+      tickId: this.lastTickId,
+      tickCount: this.tickCount,
+      tickTimeMs: this.lastTickTime,
+      visibleObjects: this.objects.size,
+      realmPortals: this.portals.size,
+      class: player ? parsePlayerClass(player.class) : 'unknown',
+      level: player?.level,
+      hp: player ? `${player.hp}/${player.maxHP}` : 'unknown',
+      mp: player ? `${player.mp}/${player.maxMP}` : 'unknown',
+      hasBackpack: player?.hasBackpack ?? false,
+      inventory: player ? `[${player.inventory.join(', ')}]` : 'unknown',
+    };
+  }
+
   /** Current in-world object id, or -1 before CreateSuccess. */
   getObjectId(): number {
     return this.objectId;
+  }
+
+  /**
+   * Object id of the player's active pet, or -1 if the server hasn't reported
+   * one yet. Note this is map-scoped: it changes after each reconnect (e.g.
+   * entering the vault), so always read it fresh rather than caching it.
+   */
+  getPetObjectId(): number {
+    return this.petObjectId;
   }
 
   /** Whether the last MapInfo identified the current map as a vault. */
@@ -273,6 +343,28 @@ export class Client extends EventEmitter {
     return true;
   }
 
+  /**
+   * Sends a raw INVSWAP between two arbitrary container slots. Unlike
+   * {@link swapInventorySlots}, the source and destination can belong to any
+   * container — the player, a pet's bag, a vault chest — identified by its
+   * object id. Each {@link SlotRef}'s `itemType` is the id of the item already
+   * in that slot (or -1 for empty, sent as the 0xffffffff sentinel). Returns
+   * false if the client is not yet in-world.
+   */
+  invSwap(from: SlotRef, to: SlotRef): boolean {
+    if (this.objectId === -1) {
+      return false;
+    }
+    const packet = new InvSwapPacket();
+    packet.time = this.time();
+    packet.position.x = this.pos.x;
+    packet.position.y = this.pos.y;
+    packet.slotObject1 = this.makeSlot(from);
+    packet.slotObject2 = this.makeSlot(to);
+    this.io.send(packet);
+    return true;
+  }
+
   /** Current player inventory snapshot (20 slots: 0-3 equip, 4-11 inventory, 12-19 backpack), or undefined. */
   getInventory(): number[] | undefined {
     return this.player ? [...this.player.inventory] : undefined;
@@ -315,9 +407,30 @@ export class Client extends EventEmitter {
     const slot = new SlotObjectData();
     slot.objectId = this.objectId;
     slot.slotId = slotId;
-    const item = this.player?.inventory?.[slotId] ?? -1;
-    slot.objectType = item === -1 ? 0xffffffff : item;
+    // -1 marks an empty slot; SlotObjectData serializes objectType as a signed
+    // int32, so it must stay -1 (sent as 0xFFFFFFFF), not the unsigned 0xffffffff.
+    slot.objectType = this.player?.inventory?.[slotId] ?? -1;
     return slot;
+  }
+
+  /** Builds SlotObjectData from an explicit slot reference (any container). */
+  private makeSlot(ref: SlotRef): SlotObjectData {
+    const slot = new SlotObjectData();
+    slot.objectId = ref.objectId;
+    slot.slotId = ref.slotId;
+    // itemType is already -1 for an empty slot; keep it signed (see slotObject).
+    slot.objectType = ref.itemType;
+    return slot;
+  }
+
+  /** Records the active pet's object id from a player stat list, if present. */
+  private capturePetObjectId(stats: StatData[]): void {
+    for (const stat of stats) {
+      if (stat.statType === StatType.PET_OBJECT_ID) {
+        this.petObjectId = stat.statValue;
+        return;
+      }
+    }
   }
 
   /** Bridges an io packet emission onto this client's emitter (for the current io). */
@@ -359,14 +472,22 @@ export class Client extends EventEmitter {
   }
 
   /**
-   * Stalls the connection: while stalled, outgoing packets are not sent but
-   * *queued* in order — mimicking a real lagout, where the client's TCP send
-   * buffer holds traffic and delivers it once the link recovers rather than
-   * discarding it. We keep *reading* the socket (the byte stream and RC4 cipher
-   * stay in sync, which a true pause/detach would break) and the handlers still
-   * generate the per-tick UpdateAck/Move/Pong, so on {@link resumeSocket} the
-   * full ack stream flushes and the server's ack accounting balances. The
-   * connection is NOT closed. Returns false if already stalled or not connected.
+   * Stalls the connection to faithfully simulate a network lagout, so the
+   * server's disconnect timeout can actually be probed.
+   *
+   * Two things happen together:
+   *  - Reading is paused via `socket.pause()`. We stop draining the OS receive
+   *    buffer, so the kernel stops ACKing application data and eventually
+   *    advertises a zero window — to the server we look like a frozen/silent
+   *    peer, not a healthy connection that merely isn't moving. (An earlier
+   *    version kept reading "to preserve RC4 sync", but that kept TCP alive at
+   *    the OS level and the server never noticed; pause/resume preserves byte
+   *    order, so RC4 stays in sync regardless.)
+   *  - Outgoing packets are not sent but *queued* in order, mimicking the
+   *    client's TCP send buffer holding traffic until the link recovers.
+   *
+   * The connection is NOT closed by us — if it drops, the server did it.
+   * Returns false if already stalled or not connected.
    */
   stallSocket(): boolean {
     if (this.stalled || !this.socket || this.socket.destroyed) {
@@ -375,9 +496,8 @@ export class Client extends EventEmitter {
     this.stalled = true;
     this.stalledAt = this.time();
     this.stallQueue.length = 0;
-    this.stallRecvUpdates = 0;
-    this.stallRecvTicks = 0;
-    console.log(`${this.tag} ⏸ socket stalled (simulated lag) — queueing outgoing until resumed`);
+    this.socket.pause(); // stop reading: the OS stops ACKing once its recv buffer fills
+    console.log(`${this.tag} ⏸ socket stalled (frozen) — paused reads, queueing outgoing until resumed`);
     return true;
   }
 
@@ -401,13 +521,15 @@ export class Client extends EventEmitter {
       }
     }
     this.stallQueue.length = 0;
-    // Each UPDATE owed an UpdateAck and each NEWTICK owed a Move; if the flushed
-    // counts match what arrived during the stall, the replay was complete.
-    const updMatch = acks === this.stallRecvUpdates ? '✓' : `⚠ ${this.stallRecvUpdates} recvd`;
-    const tickMatch = moves === this.stallRecvTicks ? '✓' : `⚠ ${this.stallRecvTicks} recvd`;
+    // Resume reading: the buffered incoming bytes flood in (in order, so RC4
+    // stays in sync) and the handlers fire, sending a burst of catch-up Moves
+    // with stale tick ids — the same recovery a real client attempts after a lag.
+    if (!this.socket.destroyed) {
+      this.socket.resume();
+    }
     console.log(
-      `${this.tag} ▶ socket resumed after ${heldMs}ms — flushed ${queued} queued packet(s): ` +
-        `${acks} UpdateAck (${updMatch}), ${moves} Move (${tickMatch}), ${queued - acks - moves} other` +
+      `${this.tag} ▶ socket resumed after ${heldMs}ms — flushed ${queued} queued outgoing packet(s): ` +
+        `${acks} UpdateAck, ${moves} Move, ${queued - acks - moves} other` +
         `${this.socket.destroyed ? ' (server had already dropped us)' : ''}`,
     );
     return heldMs;
@@ -571,6 +693,7 @@ export class Client extends EventEmitter {
   /** Clears state tied to the current map; call on any map change. */
   private clearMapState(): void {
     this.objectId = -1;
+    this.petObjectId = -1;
     this.posKnown = false;
     this.player = undefined;
     this.lastFrameTime = 0;
@@ -804,7 +927,7 @@ export class Client extends EventEmitter {
     this.objectId = p.objectId;
     this.lastFrameTime = this.time();
     console.log(`${this.tag} ✓✓ IN-WORLD as objectId ${p.objectId}`);
-    const show = new ShowAllyShootPacket();
+    const show = new ChangeAllyShootPacket();
     show.toggle = 1;
     this.io.send(show);
     this.emit(ClientEvent.Ready, p.objectId);
@@ -812,9 +935,6 @@ export class Client extends EventEmitter {
 
   /** Acknowledges object updates and refreshes tracked entities and portals. */
   private handleUpdate(p: UpdatePacket): void {
-    if (this.stalled) {
-      this.stallRecvUpdates++;
-    }
     this.io.send(new UpdateAckPacket());
     if (!this.posKnown && p.pos) {
       this.pos = { x: p.pos.x, y: p.pos.y };
@@ -825,6 +945,7 @@ export class Client extends EventEmitter {
         this.pos = { x: obj.status.pos.x, y: obj.status.pos.y };
         this.posKnown = true;
         this.player = processObject(obj);
+        this.capturePetObjectId(obj.status.stats);
       } else {
         this.objects.set(obj.status.objectId, {
           objectId: obj.status.objectId,
@@ -848,12 +969,12 @@ export class Client extends EventEmitter {
 
   /** Drives each game tick: movement, status updates, portal use, and events. */
   private handleNewTick(p: NewTickPacket): void {
-    if (this.stalled) {
-      this.stallRecvTicks++;
-    }
     const now = this.time();
     const dt = this.lastFrameTime > 0 ? now - this.lastFrameTime : 0;
     this.lastFrameTime = now;
+    this.lastTickId = p.tickId;
+    this.lastTickTime = p.tickTime;
+    this.tickCount++;
     this.updateTarget(dt);
     this.sendMove(p, now);
     this.updateStatuses(p);
@@ -924,6 +1045,7 @@ export class Client extends EventEmitter {
       if (status.objectId === this.objectId) {
         this.serverPos = { x: status.pos.x, y: status.pos.y };
         this.player = processObjectStatus(status, this.player);
+        this.capturePetObjectId(status.stats);
       } else {
         const tracked = this.objects.get(status.objectId);
         if (tracked) {

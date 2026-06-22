@@ -9,8 +9,10 @@ import './game-id-checker';
 import './inventory-tracker';
 import './packet-logger';
 import './pet-bag-round-trip';
+import './pet-to-vault';
 import './realm-finder';
 import './realm-host-mapper';
 import './socket-stall';
+import './vault-storage';
 
 export * from './decorators';
