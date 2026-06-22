@@ -1,6 +1,7 @@
 node_modules/
 dist/
 accounts.json
+package-lock.json
 .token-cache.json
 *.log
 *.tsbuildinfo
