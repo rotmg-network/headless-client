@@ -38,8 +38,8 @@ export class SocketStall {
 
   @PacketHook()
   onExaltUpdate(client: Client, p: ExaltationUpdatePacket): void {
-    console.log(`[${client.alias}] SocketStall: starting stall for ${DEFAULT_STALL_MS}`);
-    this.run(client);
+    //console.log(`[${client.alias}] SocketStall: starting stall for ${DEFAULT_STALL_MS}`);
+    //this.run(client);
   }
 
   /** Stalls the socket for `ms`, then resumes and reports the outcome. */
